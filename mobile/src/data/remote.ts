@@ -336,7 +336,7 @@ export async function finishRemoteRound(roundId: string) {
   if (saved.error) throw saved.error;
 }
 
-export async function recordRemoteSwing(input: { source: 'camera' | 'import'; videoUri: string; club: string }) {
+export async function recordRemoteSwing(input: { source: 'camera' | 'import'; videoUri: string; club: string }): Promise<{ videoId: string }> {
   const { data: userData, error: userError } = await supabase.auth.getUser();
   if (userError || !userData.user) throw userError ?? new Error('Sign in again.');
   const response = await fetch(input.videoUri);
@@ -361,6 +361,7 @@ export async function recordRemoteSwing(input: { source: 'camera' | 'import'; vi
     position: 1,
   });
   if (swing.error) throw swing.error;
+  return { videoId };
 }
 
 export async function deleteRemoteSwing(swingId: string) {

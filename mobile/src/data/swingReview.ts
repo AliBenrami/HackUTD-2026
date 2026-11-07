@@ -25,9 +25,18 @@ export type SwingCue = {
   joints: [number, number, number][];
 };
 
+export type BallSample = {
+  frame: number;
+  timeS: number;
+  x: number;
+  y: number;
+  confidence: number;
+};
+
 export type ReviewedSwing = {
   id: number;
   events: SwingCue[];
+  ball?: BallSample[];
 };
 
 export const SCORE_CUTOFF = 0.6;

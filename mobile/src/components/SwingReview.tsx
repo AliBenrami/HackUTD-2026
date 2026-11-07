@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, View, type ScrollViewInstance } from 'react-native';
 import Svg, { Circle, Line, Rect } from 'react-native-svg';
 import { swingClip, swingFrames } from '../data/swingFrames';
@@ -8,8 +8,13 @@ import { SCORE_CUTOFF, swingReview } from '../data/swingReview';
 import { SWING_FPS, swingTrack } from '../data/swingTrack';
 import { formatWhen } from '../domain/format';
 import type { SwingSession } from '../domain/types';
+import { SWING_PHASE_MODEL } from '../services/swing/measurement';
 import { useGolf } from '../state/GolfContext';
 import { colors } from '../theme/colors';
+import { ballTraces } from '../data/ballTrace';
+import { BallTrace } from './BallTrace';
+import { SwingCompare } from './SwingCompare';
+import { MeasuredSwingView } from './SwingMeasure';
 import { AppText } from './ui';
 
 const BONES: ReadonlyArray<readonly [number, number]> = [
@@ -114,7 +119,7 @@ function degrees(value: number | null) {
 }
 
 export function SwingReview() {
-  const { swings, removeSwing } = useGolf();
+  const { swings, removeSwing, measurements, analyzeSwing } = useGolf();
   const saved = swings.filter((swing) => swing.source !== 'demo');
   const savedIds = saved.map((swing) => swing.id).join('|');
   const videos = buildVideos(saved);
@@ -213,7 +218,15 @@ export function SwingReview() {
       {swing.kind === 'analyzed' ? (
         <AnalyzedSwing key={swing.swingIndex} swingIndex={swing.swingIndex} />
       ) : (
-        <SavedSwing key={swing.session.id} swing={swing.session} onRemove={() => void removeSwing(swing.session.id)} />
+        <SavedSwing
+          key={swing.session.id}
+          swing={swing.session}
+          measurement={measurements[swing.session.videoId]}
+          onAnalyze={() => {
+            if (swing.session.videoUri) void analyzeSwing(swing.session.videoId, swing.session.videoUri);
+          }}
+          onRemove={() => void removeSwing(swing.session.id)}
+        />
       )}
     </View>
   );
@@ -336,7 +349,7 @@ function AnalyzedSwing({ swingIndex }: { swingIndex: number }) {
             style={styles.still}
           />
         ) : null}
-        <PoseOverlay frameIndex={parked ? cue.frame : playFrame} />
+        <PoseOverlay frameIndex={parked ? cue.frame : playFrame} trace={ballTraces[swingIndex] ?? []} />
         <ScrollView
           ref={phases}
           horizontal
@@ -385,10 +398,13 @@ function AnalyzedSwing({ swingIndex }: { swingIndex: number }) {
         {cue.tentative ? ' · Tentative' : ''}
         {cue.score < SCORE_CUTOFF ? ' · Low score' : ''}
       </AppText>
-      {cue.name === 'Impact' && swing.id === 1 ? (
+      {cue.name === 'Impact' && (ballTraces[swingIndex] ?? []).length === 0 ? (
         <AppText className="mt-2 text-sm" style={{ color: AMBER }}>
           Ball still on the ground.
         </AppText>
+      ) : null}
+      {(ballTraces[swingIndex] ?? []).length > 0 ? (
+        <AppText className="mt-2 text-sm text-slate">Ball flight from the detector. It stops when the ball is lost.</AppText>
       ) : null}
 
       <View className="mt-5">
@@ -397,6 +413,7 @@ function AnalyzedSwing({ swingIndex }: { swingIndex: number }) {
         <Row label="Knee" left={degrees(cue.angles.leftKnee)} right={degrees(cue.angles.rightKnee)} />
         <Row label="Torso" left={degrees(cue.angles.torsoTilt)} right="" />
       </View>
+      <SwingCompare swing={swing} phaseName={cue.name} />
       <View className="mt-3">
         {CLUB_ROWS.map(([key, label]) => {
           const detection = cue.clubs[key];
@@ -414,7 +431,69 @@ function AnalyzedSwing({ swingIndex }: { swingIndex: number }) {
   );
 }
 
-function SavedSwing({ swing, onRemove }: { swing: SwingSession; onRemove: () => void }) {
+function SavedSwing({
+  swing,
+  measurement,
+  onRemove,
+  onAnalyze,
+}: {
+  swing: SwingSession;
+  measurement: ReturnType<typeof useGolf>['measurements'][string] | undefined;
+  onRemove: () => void;
+  onAnalyze: () => void;
+}) {
+  const heading = <SavedHeading swing={swing} onRemove={onRemove} />;
+  const phaseModel = measurement?.status === 'ready' ? measurement.measured.phaseModel : null;
+  const refreshed = useRef(false);
+  useEffect(() => {
+    if (refreshed.current || !swing.videoUri || phaseModel === null || phaseModel === SWING_PHASE_MODEL) return;
+    refreshed.current = true;
+    onAnalyze();
+  }, [onAnalyze, phaseModel, swing.videoUri]);
+  if (measurement?.status === 'ready' && swing.videoUri) {
+    return (
+      <MeasuredSwingView
+        videoUri={swing.videoUri}
+        measurement={measurement.measured}
+        footer={heading}
+        onAnalyze={onAnalyze}
+      />
+    );
+  }
+  return <PlainSavedSwing swing={swing} measurement={measurement} onAnalyze={onAnalyze} heading={heading} />;
+}
+
+function SavedHeading({ swing, onRemove }: { swing: SwingSession; onRemove: () => void }) {
+  return (
+    <>
+      <View className="mt-4 flex-row items-center justify-between">
+        <AppText weight="semibold" className="text-2xl">
+          {swing.club}
+        </AppText>
+        <Pressable accessibilityRole="button" onPress={onRemove} className="min-h-11 justify-center">
+          <AppText weight="semibold" className="text-sm" style={{ color: colors.magenta }}>
+            Remove
+          </AppText>
+        </Pressable>
+      </View>
+      <AppText className="mt-1 text-sm text-slate">
+        {swing.source === 'camera' ? 'Recorded' : 'Imported'} · {formatWhen(swing.createdAt)}
+      </AppText>
+    </>
+  );
+}
+
+function PlainSavedSwing({
+  swing,
+  measurement,
+  onAnalyze,
+  heading,
+}: {
+  swing: SwingSession;
+  measurement: ReturnType<typeof useGolf>['measurements'][string] | undefined;
+  onAnalyze: () => void;
+  heading: ReactNode;
+}) {
   const [playing, setPlaying] = useState(false);
   const player = useVideoPlayer(swing.videoUri, (instance) => {
     instance.pause();
@@ -444,6 +523,8 @@ function SavedSwing({ swing, onRemove }: { swing: SwingSession; onRemove: () => 
     player.play();
   }
 
+  const waiting = measurement?.status === 'pending';
+  const failed = measurement?.status === 'failed';
   return (
     <View className="mt-4">
       <View style={styles.stage}>
@@ -454,27 +535,26 @@ function SavedSwing({ swing, onRemove }: { swing: SwingSession; onRemove: () => 
           </AppText>
         </Pressable>
       </View>
-      <View className="mt-4 flex-row items-center justify-between">
-        <AppText weight="semibold" className="text-2xl">
-          {swing.club}
-        </AppText>
-        <Pressable accessibilityRole="button" onPress={onRemove} className="min-h-11 justify-center">
-          <AppText weight="semibold" className="text-sm" style={{ color: colors.magenta }}>
-            Remove
+      {heading}
+      <AppText className="mt-3 text-sm text-slate">
+        {waiting
+          ? 'Reading the pose…'
+          : failed
+            ? measurement.message
+            : 'Analyze this video to map the joints and swing phases.'}
+      </AppText>
+      {waiting || !swing.videoUri ? null : (
+        <Pressable accessibilityRole="button" onPress={onAnalyze} className="mt-2 min-h-11 justify-center">
+          <AppText weight="semibold" className="text-cyan">
+            {failed ? 'Try again' : 'Analyze'}
           </AppText>
         </Pressable>
-      </View>
-      <AppText className="mt-1 text-sm text-slate">
-        {swing.source === 'camera' ? 'Recorded' : 'Imported'} · {formatWhen(swing.createdAt)}
-      </AppText>
-      <AppText className="mt-3 text-sm text-slate">
-        Pose and phase marks are on the range clip. This recording plays back as its own video.
-      </AppText>
+      )}
     </View>
   );
 }
 
-function PoseOverlay({ frameIndex }: { frameIndex: number }) {
+function PoseOverlay({ frameIndex, trace }: { frameIndex: number; trace: readonly { frame: number; timeS: number; x: number; y: number; confidence: number }[] }) {
   const frame = swingTrack[frameIndex];
   if (!frame) return null;
   const clubs = [
@@ -523,6 +603,7 @@ function PoseOverlay({ frameIndex }: { frameIndex: number }) {
             />
           );
         })}
+        <BallTrace samples={trace} frame={frameIndex} />
       </Svg>
     </View>
   );

@@ -85,6 +85,8 @@ export class DemoSwingAnalyzer implements SwingAnalyzer {
 /**
  * Reserved for MediaPipe Pose Landmarker plus a temporal phase classifier.
  * This build does not ship model weights or run inference.
+ * Measured poses should use the phase names and elbow angles in
+ * src/domain/swingCompare.ts so pro comparison can run on the same shape.
  */
 export class MediaPipeSwingAnalyzer implements SwingAnalyzer {
   readonly id = 'mediapipe-pose';

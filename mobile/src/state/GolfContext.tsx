@@ -29,6 +29,13 @@ import {
 } from '../data/remote';
 import { supabase } from '../lib/supabase';
 import { arBridge, simulatedDevice } from '../services/ar/bridge';
+import {
+  analyzeSwingVideo,
+  loadMeasurements,
+  saveMeasurements,
+  swingApiConfigured,
+  type MeasurementRecord,
+} from '../services/swing/measurement';
 
 type GolfContextValue = {
   player: Player;
@@ -48,6 +55,8 @@ type GolfContextValue = {
   setDeviceLinked: (linked: boolean) => Promise<void>;
   recordSwing: (input: { source: 'camera' | 'import'; videoUri: string; club: string }) => Promise<void>;
   removeSwing: (swingId: string) => Promise<void>;
+  measurements: Record<string, MeasurementRecord>;
+  analyzeSwing: (videoId: string, videoUri: string) => Promise<void>;
   signOut: () => Promise<void>;
 };
 
@@ -57,6 +66,7 @@ export function GolfProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [measurements, setMeasurements] = useState<Record<string, MeasurementRecord>>({});
 
   useEffect(() => {
     let alive = true;
@@ -71,6 +81,37 @@ export function GolfProvider({ children }: { children: ReactNode }) {
       alive = false;
       data.subscription.unsubscribe();
     };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    loadMeasurements()
+      .then((stored) => {
+        if (alive) setMeasurements((current) => ({ ...stored, ...current }));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const runAnalysis = useCallback(async (videoId: string, videoUri: string) => {
+    setMeasurements((current) => ({ ...current, [videoId]: { status: 'pending' } }));
+    try {
+      const measured = await analyzeSwingVideo(videoUri);
+      setMeasurements((current) => {
+        const next = { ...current, [videoId]: { status: 'ready' as const, measured } };
+        void saveMeasurements(next);
+        return next;
+      });
+    } catch (analysisError) {
+      const message = analysisError instanceof Error ? analysisError.message : 'Pose analysis failed.';
+      setMeasurements((current) => {
+        const next = { ...current, [videoId]: { status: 'failed' as const, message } };
+        void saveMeasurements(next);
+        return next;
+      });
+    }
   }, []);
 
   const reload = useCallback(async () => {
@@ -174,18 +215,30 @@ export function GolfProvider({ children }: { children: ReactNode }) {
         await reload();
       },
       recordSwing: async (input) => {
-        await recordRemoteSwing(input);
+        const { videoId } = await recordRemoteSwing(input);
         await reload();
+        if (swingApiConfigured()) void runAnalysis(videoId, input.videoUri);
       },
       removeSwing: async (swingId) => {
+        const videoId = snapshot.swings.find((swing) => swing.id === swingId)?.videoId;
         await deleteRemoteSwing(swingId);
+        if (videoId) {
+          setMeasurements((current) => {
+            const next = { ...current };
+            delete next[videoId];
+            void saveMeasurements(next);
+            return next;
+          });
+        }
         await reload();
       },
+      measurements,
+      analyzeSwing: runAnalysis,
       signOut: async () => {
         await supabase.auth.signOut();
       },
     };
-  }, [reload, snapshot]);
+  }, [reload, snapshot, measurements, runAnalysis]);
 
   if (error) {
     return (
