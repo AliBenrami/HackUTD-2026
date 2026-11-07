@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "GolfAR",
+    "slug": "golfar",
+    "scheme": "golfar",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#080C12",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.golfar.app"
+    },
+    "android": {
+      "package": "com.golfar.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#080C12",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png",
+      "backgroundColor": "#080C12"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      "expo-font",
+      "expo-splash-screen",
+      "expo-video",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "GolfAR uses the camera to record a golf swing.",
+          "microphonePermission": "GolfAR records audio with your swing video.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "GolfAR imports a swing video from your library."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
