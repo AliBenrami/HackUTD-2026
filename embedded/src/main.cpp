@@ -23,7 +23,7 @@ constexpr int kSclPin = 9;
 constexpr int kScreenWidth = 128;
 constexpr int kScreenHeight = 64;
 // Button module S goes to GPIO 4. Pressure-module S goes to GPIO 5.
-// Buzzer on GPIO 18. A press plays one short beep.
+// Buzzer on GPIO 18. It sounds only while the button is held.
 constexpr int kButtonPin = 4;
 constexpr int kPressurePin = 5;
 constexpr int kBuzzerPin = 18;
@@ -361,44 +361,26 @@ bool beginDisplay() {
 }
 
 constexpr uint16_t kBeepHz = 2000;
-constexpr uint32_t kBeepMs = 150;
-
-uint32_t beepUntilMs = 0;
 
 void silenceBuzzer() { ledcWrite(kBuzzerPin, 0); }
 
-void startBeep(uint32_t now) {
-  vibrationOn = true;
-  beepUntilMs = now + kBeepMs;
-  ledcWriteTone(kBuzzerPin, kBeepHz);
-  Serial.println("beep");
-}
-
-void updateBeep(uint32_t now) {
-  if (!vibrationOn) {
+void setBuzzer(bool on) {
+  if (on == vibrationOn) {
     return;
   }
-  if (static_cast<int32_t>(now - beepUntilMs) < 0) {
-    return;
+  vibrationOn = on;
+  if (on) {
+    ledcWriteTone(kBuzzerPin, kBeepHz);
+    Serial.println("beep");
+  } else {
+    silenceBuzzer();
   }
-  vibrationOn = false;
-  silenceBuzzer();
 }
 
 void updateVibration(uint32_t now) {
-  static int lastButton = HIGH;
-  static uint32_t lastEdgeMs = 0;
   static int lastPrinted = -10000;
   static uint32_t lastPressurePrintMs = 0;
-  const int buttonLevel = digitalRead(kButtonPin);
-  if (buttonLevel != lastButton) {
-    if (buttonLevel == LOW && now - lastEdgeMs >= 40) {
-      startBeep(now);
-    }
-    lastButton = buttonLevel;
-    lastEdgeMs = now;
-  }
-  updateBeep(now);
+  setBuzzer(digitalRead(kButtonPin) == LOW);
 
   long sum = 0;
   for (int i = 0; i < 4; ++i) {
