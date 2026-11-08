@@ -1,0 +1,14 @@
+{
+  "dependencies": {
+    "com.unity.cloud.gltfast": "6.14.1",
+    "com.meta.xr.sdk.core": "207.0.1",
+    "com.unity.xr.openxr": "1.19.0",
+    "com.unity.xr.meta-openxr": "2.7.0",
+    "com.unity.nuget.newtonsoft-json": "3.2.2",
+    "com.unity.modules.assetbundle": "1.0.0",
+    "com.unity.modules.physics": "1.0.0",
+    "com.unity.modules.ui": "1.0.0",
+    "com.unity.modules.imgui": "1.0.0",
+    "com.unity.ugui": "2.0.0"
+  }
+}

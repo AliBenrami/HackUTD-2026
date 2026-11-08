@@ -1,0 +1,30 @@
+# Quest 2 VR port checklist
+
+The reference is the Luma Ultra project in [ar](../ar/README.md). The goal is the same generated courses, art, and relevant controls in first-person VR. Preserve the layout in course-local coordinates and apply the VR world scale when presenting it. The headset viewpoint and physically sized VR ball are deliberate differences.
+
+**Current milestone · Procedural level parity.** Unity generates courses offline with the reference random stream and placement rules. The Python and Unity comparison passes 306 cases. Headset playthroughs are the remaining acceptance check.
+
+## P0 · Procedural levels
+
+- [x] **Capture reference layouts.** Export v5 fixtures for seeds 0–99 in each difficulty, the fixed demo at seed 4242, and representative nondefault settings. [Fixture exporter](Tools/export_course_reference.py) · [Reference tests](../ar/tests/test_course_generator.py)
+- [x] **Match seeded layout decisions.** Compare archetype, tee and cup, route points, blockers, plasma pools, and prop placements. Keep Python v5 and previously saved Unity v5 JSON loadable. [Unity layout](Assets/GolfAR/CourseLayout.cs) · [Parity check](Assets/Editor/CourseParity.cs)
+- [x] **Match the terrain and difficulty rules.** Compare sampled heights, route slopes, and normals. Match the source’s shortcut obstruction and route clearance rules. Keep the displayed terrain and Unity collider on the same triangle mesh. [Reference terrain design](../ar/AR_POC.md#continuous-neon-cyber-golf-terrain) · [Unity height field](Assets/GolfAR/CourseSurface.cs) · [Unity mesh](Assets/GolfAR/CourseView.cs)
+- [x] **Separate generation inputs from VR presentation.** Keep the 60 × 40 cm design reference, default 54 × 34 cm island, and v5 units intact. Apply first-person scale during presentation, keep the 43 mm VR ball physically sized, and validate route clearance. Keep camera-based reservations out of VR generation. [Reference scale and geometry](../ar/ASSETS.md#physical-dimensions-and-scale) · [VR placement](Assets/GolfAR/GreenPlay.cs)
+- [ ] **Exercise the full headset generation loop.** Launch directly into a generated level. From the headset, enter a seed, change difficulty, generate a fresh seed, regenerate the current one, restore the previous layout, load the fixed demo, and save and reload v5 JSON. Keep the current hole playable if generation or loading fails. Report the seed, archetype, bounds, route and blocker checks, feature counts, and generation time. [Reference controls](../ar/README.md#neon-cyber-golf-terrain) · [Quest controls and layout swap](Assets/GolfAR/GolfTable.cs)
+
+**P0 acceptance.** The Quest APK generates levels on-device without Python or a network. The reference sweep passes on both implementations with matching layout decisions and numeric geometry within an explicit tolerance. On a Quest 2, generate and replay a known seed on each difficulty, putt from tee to cup, and verify that replacing the course replaces its collider and places the player at the new tee. Geometry checks and headset play are separate gates.
+
+## P1 · Art, antialiasing, and effects
+
+- [x] **Port the procedural geometry.** Beveled island walls and cyan perimeter trim, the dark teal nine-cross-section fairway ribbon, plasma rims and halos, the ball mark, target, and obstacle edges are in the Unity build. The fixed demo was checked from above and at an oblique angle. First-person headset comparison remains part of the headset review. [Panda3D renderer](../ar/src/golf_scene.py) · [Unity renderer](Assets/GolfAR/CourseView.cs)
+- [x] **Bring over the cyberpunk props.** The local import path resolves all 23 GLBs to the source manifest IDs. Placed models keep their authored materials, ground pivots, scale targets, and yaw. Missing packs use procedural props. [Asset catalog](../ar/assets/manifest.json) · [Import tool](Tools/import_cyberpunk_models.py) · [Pack license](../ar/assets/CYBERPUNK_ASSET_LICENSE.md)
+- [ ] **Match materials and lighting.** Carry over the palette, metallic and roughness values, key and fill lighting, emissive accents, and prop emission treatment. Compare the reference’s texture filtering with the Quest import and mip settings. Use the fixed demo to check that the bright accents read cleanly in both eyes. [Reference materials](../ar/src/cyber_theme.py) · [Asset rendering notes](../ar/ASSETS.md#procedural-gameplay-assets)
+- [ ] **Verify headset AA across presets.** Performance requests 2× MSAA and Balanced and Quality request 4×. The Android default is Balanced, and the app logs XR render target samples and timing. Compare all three presets on Quest 2 and check shimmer on silhouettes, thin trim, and small props while moving your head. [Android quality settings](ProjectSettings/QualitySettings.asset) · [XR setup](Assets/Editor/QuestProject.cs)
+- [ ] **Evaluate bloom in stereo.** Match the reference’s restrained neon glow where it holds up in both eyes and preserves antialiasing. The Luma Ultra reference’s bloom was a desktop mono effect. Make it optional in VR and compare frame timing with it enabled and disabled. [Reference graphics presets](../ar/README.md#neon-cyber-golf-terrain)
+
+## P2 · VR controls and parity review
+
+- [ ] **Map the remaining reference controls.** Keep the fixed demo, seed and layout actions, route diagnostics, neon toggle, and prop gallery accessible with Touch. Cover non-AR stage and prop adjustments where they are useful in the course editor. Keep putting and automatic teleport to the settled lie as the VR play flow.
+- [ ] **Verify the complete Quest 2 experience.** Check cold launch, repeated course swaps, two-eye rendering, menu selection, asset fallback, and frame timing during play. Record the seed, difficulty, graphics preset, and APK used for each comparison.
+
+Viture tracking and projection, optical black and edge fade, marker and camera calibration, and real-object scanning or overlays are outside this VR parity checklist. Existing passthrough support is separate from the procedural-level milestone.
