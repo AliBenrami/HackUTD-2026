@@ -16,6 +16,7 @@ def format_reading(reading) -> str:
             f"imu src={reading.source} seq={reading.seq} t={reading.time_ms}  "
             f"accel {reading.ax_g:6.2f} {reading.ay_g:6.2f} {reading.az_g:6.2f} g   "
             f"gyro {reading.gx_dps:7.1f} {reading.gy_dps:7.1f} {reading.gz_dps:7.1f} dps   "
+            f"angle {reading.pitch_deg:6.1f} {reading.roll_deg:6.1f} {reading.yaw_deg:6.1f}   "
             f"{reading.temp_c:4.1f} C  {reading.kind}"
         )
     if isinstance(reading, UnknownReading):

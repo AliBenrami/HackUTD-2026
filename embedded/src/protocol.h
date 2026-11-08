@@ -16,12 +16,13 @@
 //   11     payload
 //   last   checksum       low 8 bits of the sum of every preceding byte
 //
-// IMU payload, sensor_id 1, 16 bytes, all little-endian:
+// IMU payload, sensor_id 1, little-endian:
 //   int16 ax_mg, ay_mg, az_mg
 //   int16 gx_dps10, gy_dps10, gz_dps10   (tenths of a degree per second)
 //   int16 temp_c100                      (hundredths of a degree C)
 //   uint8 kind                           (1 = MPU-6050, 2 = MPU-6500)
 //   uint8 source                         (0 = first device, 1 = second)
+//   int16 pitch_d10, roll_d10, yaw_d10   (tenths of a degree from address)
 
 static constexpr uint8_t kFrameMagic = 0xA5;
 static constexpr uint8_t kFrameVersion = 1;
