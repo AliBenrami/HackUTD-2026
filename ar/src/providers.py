@@ -197,12 +197,18 @@ class DesktopPoseProvider:
         self._yaw = 0.0
         self._pitch = 0.0
         self._pos = [0.0, 0.0, 0.0]
+        self._fixed_pos = None
         self._keys: set[str] = set()
         self._snap: PoseSnapshot | None = None
 
     def set_fixed(self, yaw_deg: float, pitch_deg: float) -> None:
         """Pin the view (test hook / screenshots); mouse ignored."""
         self._fixed = (math.radians(yaw_deg), math.radians(pitch_deg))
+
+    def set_position(self, x: float, y: float, z: float) -> None:
+        """Set an initial diagnostic eye position in the GL tracking frame."""
+        self._pos = [float(x), float(y), float(z)]
+        self._fixed_pos = list(self._pos)
 
     def start(self) -> None:
         pass
@@ -266,7 +272,7 @@ class DesktopPoseProvider:
         yaw, pitch = self._mapped_look()
         self._yaw_off = yaw + self._yaw_off
         self._pitch_off = pitch + self._pitch_off
-        self._pos = [0.0, 0.0, 0.0]
+        self._pos = list(self._fixed_pos) if self._fixed_pos is not None else [0.0, 0.0, 0.0]
 
     def stop(self) -> None:
         pass

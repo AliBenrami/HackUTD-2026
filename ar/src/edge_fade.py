@@ -23,17 +23,22 @@ Design notes (all learned the hard way in this repo):
 from __future__ import annotations
 
 VERTEX = """
-varying vec4 v_clip;
+#version 130
+uniform mat4 p3d_ModelViewProjectionMatrix;
+in vec4 p3d_Vertex;
+out vec4 v_clip;
 void main() {
-    v_clip = p3d_ModelViewProjectionMatrix * vec4(p3d_Vertex, 1.0);
+    v_clip = p3d_ModelViewProjectionMatrix * p3d_Vertex;
     gl_Position = v_clip;
 }
 """
 
 FRAGMENT = """
+#version 130
 uniform float u_width;    // fade band width, fraction of half-view (0..0.5)
 uniform float u_strength; // 0 = off, 1 = full fade to black at the edge
-varying vec4 v_clip;
+in vec4 v_clip;
+out vec4 fragColor;
 void main() {
     vec2 ndc = v_clip.xy / v_clip.w;
     vec2 uv = ndc * 0.5 + 0.5;
@@ -41,7 +46,7 @@ void main() {
     float edge = min(d.x, d.y);
     float t = smoothstep(0.0, u_width, edge);
     float a = (1.0 - t) * u_strength;
-    gl_FragColor = vec4(0.0, 0.0, 0.0, a);
+    fragColor = vec4(0.0, 0.0, 0.0, a);
 }
 """
 
@@ -54,11 +59,8 @@ CARD_HALF_SIZE = 100.0
 class EdgeFadeEffect:
     """Camera-following quad + NDC smoothstep fade (see module docstring).
 
-    NOTE on validation: Panda's get_error_flag() reports an error for
-    this shader on our Mesa stack (undeclared p3d_* builtins in a probe
-    compile), yet the effect demonstrably runs -- the smooth,
-    width-responsive gradient cannot come from fixed-function. Verified
-    pixel-level in mono and stereo screenshots, not via the flag.
+    The shader declares Panda's standard inputs explicitly and targets GLSL
+    1.30, avoiding the legacy implicit-builtin compile path on Mesa.
     """
     def __init__(self, render, width: float = 0.10,
                  strength: float = 1.0) -> None:
