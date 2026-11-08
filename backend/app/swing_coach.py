@@ -8,7 +8,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
+DEFAULT_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
 COACH_TIMEOUT_SECONDS = 5.0
 logger = logging.getLogger(__name__)
 

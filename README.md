@@ -29,7 +29,7 @@ Without `MONGODB_URI`, the server keeps the same documents in `backend/data/golf
 
 ### Nemotron swing coach
 
-Set `NVIDIA_API_KEY` in the backend process environment before starting Uvicorn. The default model is [Nemotron 3.5 Lightning](https://build.nvidia.com/nvidia/nemotron-3.5-lightning-30b-a3b/build). Set `NEMOTRON_MODEL` to change the served model or `NEMOTRON_BASE_URL` to use another OpenAI-compatible endpoint (include its `/v1` path). A self-hosted endpoint without authentication only needs the base URL and model name.
+Set `NVIDIA_API_KEY` in the backend process environment before starting Uvicorn. The default model is [Nemotron 3.5 Super VL](https://build.nvidia.com/nvidia/nemotron-3.5-super-vl-120b-a12b). Set `NEMOTRON_MODEL` to change the served model or `NEMOTRON_BASE_URL` to use another OpenAI-compatible endpoint (include its `/v1` path). A self-hosted endpoint without authentication only needs the base URL and model name.
 
 Point the app's `EXPO_PUBLIC_SWING_API_URL` at the backend. Open **Swing**, choose a sample or analyzed recording, and tap **Get Nemotron cue** under **Next practice cue**. The coach receives up to three swing comparison observations. The app shows the local cue immediately and keeps it if the server is unconfigured, the request times out, or the model response is invalid.
 
