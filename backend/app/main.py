@@ -19,6 +19,7 @@ from app.caddie import build_card, load_bag, narrate, recap, save_bag, save_note
 from app.golfstore import get_store
 from app.pipeline import MAX_BYTES, analyze_bytes, download_video, runtime_status
 from app.pose import PoseUnavailable
+from app.swing_coach import PracticeCue, SwingCoachRequest, swing_coach
 
 app = FastAPI(title="GolfAR swing analysis")
 app.add_middleware(
@@ -90,6 +91,11 @@ def read_recap(user_id: str, round_id: str) -> dict:
 @app.post("/caddie/narrate")
 def caddie_narrate(body: dict) -> dict:
     return narrate(body) or {"insights": None}
+
+
+@app.post("/caddie/swing-coach")
+async def caddie_swing_coach(body: SwingCoachRequest) -> PracticeCue | None:
+    return await swing_coach(body)
 
 
 @app.post("/swings")

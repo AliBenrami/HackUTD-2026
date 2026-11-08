@@ -148,6 +148,28 @@ export async function requestNarration(packet: unknown): Promise<Array<{ id: str
   return body.insights ?? null;
 }
 
+export type CoachEvidence = Pick<SwingInsight, 'id' | 'observation' | 'why'>;
+export type PracticeCue = { evidenceId: string; cue: string };
+
+export async function requestPracticeCue(evidence: CoachEvidence[], controller: AbortController): Promise<PracticeCue | null> {
+  const timeout = setTimeout(() => controller.abort(), 6500);
+  try {
+    const response = await request('/caddie/swing-coach', {
+      method: 'POST',
+      body: JSON.stringify({ evidence }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const body = (await response.json()) as PracticeCue | null;
+    if (typeof body?.cue !== 'string' || !body.cue.trim()) return null;
+    return evidence.some(({ id }) => id === body.evidenceId) ? body : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function applyNarration(insights: SwingInsight[], lines: Array<{ id: string; observation: string; why: string }> | null): SwingInsight[] {
   if (!lines) return insights;
   return insights.map((insight) => {

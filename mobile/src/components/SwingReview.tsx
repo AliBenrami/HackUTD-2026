@@ -27,6 +27,7 @@ import { SWING_PHASE_MODEL, type MeasurementRecord } from '../services/swing/mea
 import { useGolf } from '../state/GolfContext';
 import { colors } from '../theme/colors';
 import { BallTrace } from './BallTrace';
+import { SwingCoach } from './SwingCoach';
 import { MeasuredSwingView } from './SwingMeasure';
 import { AppText } from './ui';
 
@@ -578,6 +579,7 @@ function AnalyzedSwing({
           );
         })}
       </View>
+      <SwingCoach key={swing.id} swing={swing} />
     </View>
   );
 }

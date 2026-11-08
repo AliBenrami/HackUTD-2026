@@ -8,6 +8,7 @@ import type { SwingMeasurement } from '../services/swing/measurement';
 import { colors } from '../theme/colors';
 import type { BallSample } from '../data/swingReview';
 import { BallTrace } from './BallTrace';
+import { SwingCoach } from './SwingCoach';
 import { AppText } from './ui';
 
 const BONES: ReadonlyArray<readonly [number, number]> = [
@@ -105,6 +106,7 @@ export function MeasuredSwingView({
           <AppText className="mt-3 text-sm text-slate">The hands did not trace a full swing, so there are no phase cues.</AppText>
         </>
       )}
+      {swing && swing.events.length > 0 ? <SwingCoach key={swing.id} swing={swing} /> : null}
       <AppText className="mt-3 text-sm text-slate">{measurement.disclaimer}</AppText>
       {onAnalyze ? (
         <Pressable accessibilityRole="button" onPress={onAnalyze} className="mt-2 min-h-11 justify-center">

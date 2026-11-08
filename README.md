@@ -21,11 +21,17 @@ Real courses open on a satellite map. Shot marks and the path sit on that imager
 cd backend
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-# optional: MONGODB_URI and GEMINI_API_KEY
+# optional: MONGODB_URI, GEMINI_API_KEY, and NVIDIA_API_KEY
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Without `MONGODB_URI`, the server keeps the same documents in `backend/data/golfar.json`. Without `GEMINI_API_KEY`, the hole card is the bag fallback and says the model was not used.
+
+### Nemotron swing coach
+
+Set `NVIDIA_API_KEY` in the backend process environment before starting Uvicorn. The default model is [Nemotron 3.5 Lightning](https://build.nvidia.com/nvidia/nemotron-3.5-lightning-30b-a3b/build). Set `NEMOTRON_MODEL` to change the served model or `NEMOTRON_BASE_URL` to use another OpenAI-compatible endpoint (include its `/v1` path). A self-hosted endpoint without authentication only needs the base URL and model name.
+
+Point the app's `EXPO_PUBLIC_SWING_API_URL` at the backend. Open **Swing**, choose a sample or analyzed recording, and tap **Get Nemotron cue** under **Next practice cue**. The coach receives up to three swing comparison observations. The app shows the local cue immediately and keeps it if the server is unconfigured, the request times out, or the model response is invalid.
 
 Unit tests for scoring and the sample course data:
 
