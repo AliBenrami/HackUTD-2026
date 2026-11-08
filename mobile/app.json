@@ -48,7 +48,7 @@
         }
       ],
       [
-        "expo-image-picker",
+        "./plugins/image-picker.js",
         {
           "photosPermission": "GolfAR imports a swing video from your library."
         }
