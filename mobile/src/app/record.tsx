@@ -1,9 +1,9 @@
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, View } from 'react-native';
+import { Alert, Linking, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { AppText } from '../components/ui';
+import { AppText, Button } from '../components/ui';
 import { useGolf } from '../state/GolfContext';
 import { colors } from '../theme/colors';
 
@@ -11,58 +11,40 @@ const MAX_SECONDS = 12;
 
 export default function RecordScreen() {
   const { club } = useLocalSearchParams<{ club?: string }>();
-  const clubName = club || 'Driver';
-  const [available, setAvailable] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    CameraView.isAvailableAsync()
-      .then(setAvailable)
-      .catch(() => setAvailable(false));
-  }, []);
-
-  if (available === null) {
-    return (
-      <View className="flex-1 items-center justify-center bg-ink">
-        <AppText className="text-slate">Opening the camera…</AppText>
-      </View>
-    );
-  }
-
-  if (!available) {
-    return <CameraMissing />;
-  }
-
-  return <Recorder clubName={clubName} />;
-}
-
-function CameraMissing() {
-  const insets = useSafeAreaInsets();
-  return (
-    <View className="flex-1 bg-ink px-5" style={{ paddingTop: insets.top + 16 }}>
-      <AppText weight="semibold" className="text-2xl">
-        Record a swing
-      </AppText>
-      <AppText className="mt-3 text-base text-slate">This phone has no camera, so a swing can’t be recorded here.</AppText>
-      <Pressable accessibilityRole="button" onPress={() => router.back()} className="mt-6 min-h-11 justify-center">
-        <AppText weight="semibold" className="text-cyan">
-          Back
-        </AppText>
-      </Pressable>
-    </View>
-  );
+  return <Recorder clubName={club || 'Driver'} />;
 }
 
 function Recorder({ clubName }: { clubName: string }) {
   const insets = useSafeAreaInsets();
   const cameraRef = useRef<CameraView>(null);
   const recording = useRef(false);
+  const asked = useRef(false);
   const [ready, setReady] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [facing, setFacing] = useState<'back' | 'front'>('back');
+  const [mountError, setMountError] = useState<string | null>(null);
   const [cameraPermission, requestCamera] = useCameraPermissions();
   const [micPermission, requestMic] = useMicrophonePermissions();
   const { recordSwing } = useGolf();
+
+  const cameraGranted = Boolean(cameraPermission?.granted);
+  const micGranted = Boolean(micPermission?.granted);
+  const canAskAgain = Boolean(
+    (cameraPermission && !cameraPermission.granted && cameraPermission.canAskAgain) ||
+      (micPermission && !micPermission.granted && micPermission.canAskAgain)
+  );
+
+  useEffect(() => {
+    if (asked.current || !cameraPermission || !micPermission) return;
+    if (cameraGranted && micGranted) return;
+    if (!cameraPermission.canAskAgain && !micPermission.canAskAgain) return;
+    asked.current = true;
+    void (async () => {
+      if (!cameraPermission.granted && cameraPermission.canAskAgain) await requestCamera();
+      if (!micPermission.granted && micPermission.canAskAgain) await requestMic();
+    })();
+  }, [cameraGranted, cameraPermission, micGranted, micPermission, requestCamera, requestMic]);
 
   useEffect(() => {
     if (!isRecording) return;
@@ -71,10 +53,16 @@ function Recorder({ clubName }: { clubName: string }) {
     return () => clearInterval(timer);
   }, [isRecording]);
 
-  async function ensurePermissions(): Promise<boolean> {
-    const camera = cameraPermission?.granted ? cameraPermission : await requestCamera();
-    const mic = micPermission?.granted ? micPermission : await requestMic();
-    return Boolean(camera?.granted && mic?.granted);
+  async function allowAccess() {
+    const camera =
+      cameraPermission && !cameraPermission.granted && cameraPermission.canAskAgain
+        ? await requestCamera()
+        : cameraPermission;
+    const mic =
+      micPermission && !micPermission.granted && micPermission.canAskAgain ? await requestMic() : micPermission;
+    const blocked =
+      (camera && !camera.granted && !camera.canAskAgain) || (mic && !mic.granted && !mic.canAskAgain);
+    if (blocked) await Linking.openSettings();
   }
 
   async function toggleRecording() {
@@ -84,8 +72,7 @@ function Recorder({ clubName }: { clubName: string }) {
       camera.stopRecording();
       return;
     }
-    const allowed = await ensurePermissions();
-    if (!allowed) {
+    if (!cameraGranted || !micGranted) {
       Alert.alert('Camera access is off', 'Allow the camera and microphone to record a swing.');
       return;
     }
@@ -106,6 +93,35 @@ function Recorder({ clubName }: { clubName: string }) {
     }
   }
 
+  if (!cameraPermission || !micPermission) {
+    return (
+      <View className="flex-1 items-center justify-center bg-ink">
+        <AppText className="text-slate">Opening the camera…</AppText>
+      </View>
+    );
+  }
+
+  if (!cameraGranted || !micGranted || mountError) {
+    return (
+      <View className="flex-1 bg-ink px-5" style={{ paddingTop: insets.top + 16 }}>
+        <AppText weight="semibold" className="text-2xl">
+          Record a swing
+        </AppText>
+        <AppText className="mt-3 text-base text-slate">
+          {mountError ?? 'Allow the camera and microphone so a swing can be recorded.'}
+        </AppText>
+        <View className="mt-6">
+          <Button label={canAskAgain ? 'Allow camera' : 'Open Settings'} onPress={() => void allowAccess()} />
+        </View>
+        <Pressable accessibilityRole="button" onPress={() => router.back()} className="mt-4 min-h-11 justify-center">
+          <AppText weight="semibold" className="text-cyan">
+            Back
+          </AppText>
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <View className="flex-1 bg-ink">
       <CameraView
@@ -114,6 +130,7 @@ function Recorder({ clubName }: { clubName: string }) {
         mode="video"
         facing={facing}
         onCameraReady={() => setReady(true)}
+        onMountError={({ message }) => setMountError(message)}
       />
       <View
         style={{ position: 'absolute', top: insets.top + 12, left: 20, right: 20 }}
