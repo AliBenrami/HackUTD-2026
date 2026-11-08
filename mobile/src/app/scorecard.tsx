@@ -1,16 +1,20 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { AppText, BackHeader, Button, Screen } from '../components/ui';
 import { formatRelative } from '../domain/format';
+import { courseHandicap } from '../domain/caddie';
 import { holeResult, holeScoreToInput, nineSummary, summarizeHoles } from '../domain/scoring';
+import { getCourse, getTee } from '../data/courses';
+import { loadRecap } from '../services/golf/client';
 import type { HoleScore, Round } from '../domain/types';
 import { useGolf } from '../state/GolfContext';
 import { resultTone } from '../theme/colors';
 
 export default function ScorecardScreen() {
   const params = useLocalSearchParams<{ roundId?: string }>();
-  const { rounds, scores, activeRound, saveHoleScore, focusHole } = useGolf();
+  const { rounds, scores, activeRound, saveHoleScore, focusHole, bag, userId } = useGolf();
+  const [recap, setRecap] = useState<string[] | null>(null);
   const round =
     rounds.find((item) => item.id === params.roundId) ??
     activeRound ??
@@ -18,6 +22,19 @@ export default function ScorecardScreen() {
     null;
   const holes = round ? (scores[round.id] ?? []) : [];
   const [editing, setEditing] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!round) return;
+    let alive = true;
+    loadRecap(userId, round.id)
+      .then((lines) => {
+        if (alive) setRecap(lines);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [round, userId]);
 
   if (!round) {
     return (
@@ -28,6 +45,12 @@ export default function ScorecardScreen() {
   }
 
   const stats = summarizeHoles(holes.map(holeScoreToInput));
+  const course = getCourse(round.courseId);
+  const tee = course ? getTee(course, round.teeSetId) : undefined;
+  const handicap =
+    round?.nine === 'full' && bag.handicapIndex != null && tee?.rating != null && tee.slope != null && stats.totalPar != null
+      ? courseHandicap(bag.handicapIndex, tee.slope, tee.rating, stats.totalPar)
+      : null;
   const relative = stats.relativeToPar == null ? null : formatRelative(stats.relativeToPar);
   const front = holes.some((hole) => hole.holeNumber <= 9);
   const back = holes.some((hole) => hole.holeNumber >= 10);
@@ -44,6 +67,18 @@ export default function ScorecardScreen() {
       <AppText weight="semibold" className="mt-3 text-3xl" style={{ color: toneFor(stats.relativeToPar) }}>
         {relative ? `${relative.symbol} · ${relative.words}` : 'No holes saved'}
       </AppText>
+      {recap ? (
+        <View className="mt-4 rounded-3xl border border-white/10 bg-panel p-4">
+          {recap.map((line) => (
+            <AppText key={line} className="mb-2 text-sm">
+              {line}
+            </AppText>
+          ))}
+        </View>
+      ) : null}
+      {stats.totalStrokes != null && handicap != null ? (
+        <AppText className="mt-1 text-sm text-slate">Net {stats.totalStrokes - handicap}</AppText>
+      ) : null}
       {stats.totalStrokes != null ? (
         <AppText className="mt-1 text-sm text-slate">
           {stats.totalStrokes} strokes · par {stats.totalPar} on saved holes

@@ -15,6 +15,18 @@ npx expo start
 
 Set `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in `mobile/.env`. Those values stay local.
 
+Mapped courses from OpenStreetMap need the rows in `mobile/supabase/mapped_courses.sql` applied in the Supabase SQL editor before a round can start on them. The phone keeps score in Supabase and sends bags, shot marks, and caddie cards to the swing server.
+
+```bash
+cd backend
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+# optional: MONGODB_URI and GEMINI_API_KEY
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Without `MONGODB_URI`, the server keeps the same documents in `backend/data/golfar.json`. Without `GEMINI_API_KEY`, the hole card is the bag fallback and says the model was not used.
+
 Unit tests for scoring and the sample course data:
 
 ```bash

@@ -11,7 +11,7 @@ import {
   formatRelative,
   formatWhen,
 } from '../../domain/format';
-import { holeScoreToInput, selectBestRound, summarizeHoles, type RoundStats } from '../../domain/scoring';
+import { averageByHoleNumber, holeScoreToInput, selectBestRound, summarizeHoles, type RoundStats } from '../../domain/scoring';
 import type { HoleScore, Round } from '../../domain/types';
 import { useGolf } from '../../state/GolfContext';
 import { resultTone } from '../../theme/colors';
@@ -19,7 +19,7 @@ import { resultTone } from '../../theme/colors';
 type Scope = 'round' | 'all';
 
 export default function StatsScreen() {
-  const { rounds, scores, activeRound } = useGolf();
+  const { rounds, scores, activeRound, notes } = useGolf();
   const [scope, setScope] = useState<Scope>(activeRound ? 'round' : 'all');
   const focus = activeRound ?? rounds[0] ?? null;
   const roundHoles = focus ? (scores[focus.id] ?? []) : [];
@@ -41,6 +41,19 @@ export default function StatsScreen() {
   );
   const bestRound = rounds.find((round) => round.id === best?.id) ?? null;
   const onlySamples = rounds.length > 0 && rounds.every((round) => round.sample);
+  const chartCourses = rounds.filter((round, index, all) => all.findIndex((item) => item.courseId === round.courseId) === index);
+  const [chartCourseId, setChartCourseId] = useState(focus?.courseId ?? chartCourses[0]?.courseId ?? '');
+  const chartHoles =
+    scope === 'all'
+      ? averageByHoleNumber(
+          rounds
+            .filter((round) => round.status === 'completed' && !round.sample && round.courseId === chartCourseId)
+            .map((round) => (scores[round.id] ?? []).map(holeScoreToInput)),
+        )
+      : stats.byHole;
+  const realNotes = notes.filter((note) => !note.sample && note.strokes != null);
+  const misses = realNotes.filter((note) => note.miss);
+  const greens = realNotes.filter((note) => note.gir != null);
 
   return (
     <Screen>
@@ -93,10 +106,19 @@ export default function StatsScreen() {
           <AppText weight="semibold" className="mb-3 mt-8 text-lg">
             Score by hole
           </AppText>
-          <ScoreChart holes={stats.byHole} />
+          {scope === 'all' && chartCourses.length > 1 ? (
+            <View className="mb-3 flex-row flex-wrap gap-2">
+              {chartCourses.map((round) => (
+                <Pressable key={round.courseId} accessibilityRole="button" onPress={() => setChartCourseId(round.courseId)} className="min-h-10 justify-center rounded-full border border-white/10 px-3">
+                  <AppText className={`text-sm ${round.courseId === chartCourseId ? 'text-cyan' : ''}`}>{round.courseName}</AppText>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+          <ScoreChart holes={chartHoles} />
           {scope === 'all' ? (
             <AppText className="mt-2 text-xs text-slate">
-              Every saved hole, oldest round first. The number under a bar is the hole.
+              Average against par for each hole number, from finished rounds on the selected course. Sample rounds are left out.
             </AppText>
           ) : null}
 
@@ -127,6 +149,24 @@ export default function StatsScreen() {
                 ? 'Enter putts on a hole and they will show up here.'
                 : `From ${stats.puttsSampleSize} holes with putts entered.`
             }
+          />
+          <Detail
+            label="Miss direction"
+            value={
+              misses.length === 0
+                ? 'Not recorded'
+                : `Left ${misses.filter((note) => note.miss === 'left').length} · Right ${misses.filter((note) => note.miss === 'right').length}`
+            }
+            hint={misses.length === 0 ? 'Mark a miss on a hole and it will show up here.' : `${misses.length} holes with a miss entered.`}
+          />
+          <Detail
+            label="Greens in regulation"
+            value={
+              greens.length === 0
+                ? 'Not recorded'
+                : `${Math.round((greens.filter((note) => note.gir).length / greens.length) * 100)}%`
+            }
+            hint={greens.length === 0 ? 'Mark a green on a hole and it will show up here.' : `${greens.filter((note) => note.gir).length} of ${greens.length} holes.`}
           />
           <Detail
             label="Fairways hit"

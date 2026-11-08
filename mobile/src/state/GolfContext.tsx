@@ -14,6 +14,8 @@ import type {
   SwingSession,
   TeeSet,
 } from '../domain/types';
+import { buildSampleRounds } from '../data/seed';
+import { getCourse } from '../data/courses';
 import type { HoleDraft, Snapshot } from '../data/repository';
 import {
   deleteRemoteSwing,
@@ -28,7 +30,9 @@ import {
   startRemoteRound,
 } from '../data/remote';
 import { supabase } from '../lib/supabase';
-import { arBridge, simulatedDevice } from '../services/ar/bridge';
+import { angleVector, STARTER_BAG, type ClubCarry } from '../domain/caddie';
+import { arBridge, defaultPreferences, simulatedDevice } from '../services/ar/bridge';
+import { loadBag, loadNotes, saveBag, saveNote, saveSwingDocument, type Bag, type HoleNote } from '../services/golf/client';
 import {
   analyzeSwingVideo,
   loadMeasurements,
@@ -57,16 +61,164 @@ type GolfContextValue = {
   removeSwing: (swingId: string) => Promise<void>;
   measurements: Record<string, MeasurementRecord>;
   analyzeSwing: (videoId: string, videoUri: string) => Promise<void>;
+  userId: string;
+  bag: Bag;
+  notes: HoleNote[];
+  saveHoleNote: (note: HoleNote) => Promise<void>;
+  updateBag: (clubs: ClubCarry[], handicapIndex: number | null) => Promise<void>;
   signOut: () => Promise<void>;
 };
 
 const GolfContext = createContext<GolfContextValue | null>(null);
 
+const PREVIEW_ROUND = 'preview-round';
+
+function PreviewGolf({ children }: { children: ReactNode }) {
+  const course = getCourse('duck-creek-golf-club');
+  const tee = course?.teeSets.find((item) => item.name === 'Blue') ?? course?.teeSets[0];
+  const samples = useMemo(() => buildSampleRounds(), []);
+  const [currentHole, setCurrentHole] = useState(1);
+  const [status, setStatus] = useState<'active' | 'completed'>('active');
+  const [name, setName] = useState('Preview');
+  const [preferences, setPreferences] = useState<ARPreferences>({
+    ...defaultPreferences,
+    hud: { ...defaultPreferences.hud, showWind: true },
+  });
+  const [bag, setBag] = useState<Bag>({
+    clubs: STARTER_BAG,
+    handicapIndex: 12,
+    starter: true,
+    tendencies: { holes: 0, misses: {} },
+  });
+  const [notes, setNotes] = useState<HoleNote[]>([]);
+  const [scores, setScores] = useState<Record<string, HoleScore[]>>(() => {
+    const live: HoleScore[] = (tee?.holes ?? []).map((hole) => ({
+      id: `${PREVIEW_ROUND}-${hole.number}`,
+      roundId: PREVIEW_ROUND,
+      holeNumber: hole.number,
+      par: hole.par,
+      yards: hole.yards,
+      strokes: null,
+      putts: null,
+      penalties: null,
+      fairwayHit: null,
+      completed: false,
+    }));
+    const seeded: Record<string, HoleScore[]> = { [PREVIEW_ROUND]: live };
+    for (const sample of buildSampleRounds()) seeded[sample.round.id] = sample.scores;
+    return seeded;
+  });
+
+  const value = useMemo<GolfContextValue>(() => {
+    const activeRound: Round | null = course && tee && status === 'active'
+      ? {
+          id: PREVIEW_ROUND,
+          playerId: 'preview',
+          courseId: course.id,
+          courseName: course.name,
+          teeSetId: tee.id,
+          teeSetName: tee.name,
+          nine: 'full',
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          status: 'active',
+          currentHole,
+          sample: false,
+        }
+      : null;
+    const rounds = [
+      ...(course && tee
+        ? [{
+            id: PREVIEW_ROUND,
+            playerId: 'preview',
+            courseId: course.id,
+            courseName: course.name,
+            teeSetId: tee.id,
+            teeSetName: tee.name,
+            nine: 'full' as const,
+            startedAt: new Date().toISOString(),
+            completedAt: status === 'completed' ? new Date().toISOString() : null,
+            status,
+            currentHole,
+            sample: false,
+          }]
+        : []),
+      ...samples.map((sample) => sample.round),
+    ];
+    return {
+      player: { id: 'preview', name, createdAt: new Date().toISOString() },
+      rounds,
+      scores,
+      swings: [],
+      preferences,
+      recentCourseIds: ['duck-creek-golf-club'],
+      activeRound,
+      startRound: async (nextCourse, nextTee) => {
+        setStatus('active');
+        setCurrentHole(1);
+        setScores((current) => ({
+          ...current,
+          [PREVIEW_ROUND]: nextTee.holes.map((hole) => ({
+            id: `${PREVIEW_ROUND}-${hole.number}`,
+            roundId: PREVIEW_ROUND,
+            holeNumber: hole.number,
+            par: hole.par,
+            yards: hole.yards,
+            strokes: null,
+            putts: null,
+            penalties: null,
+            fairwayHit: null,
+            completed: false,
+          })),
+        }));
+        void nextCourse;
+      },
+      saveHoleScore: async (draft) => {
+        setScores((current) => ({
+          ...current,
+          [draft.roundId]: (current[draft.roundId] ?? []).map((hole) =>
+            hole.holeNumber === draft.holeNumber
+              ? { ...hole, strokes: draft.strokes, putts: draft.putts, penalties: draft.penalties, fairwayHit: draft.fairwayHit, completed: true }
+              : hole,
+          ),
+        }));
+      },
+      focusHole: async (_roundId, holeNumber) => setCurrentHole(holeNumber),
+      endRound: async () => setStatus('completed'),
+      noteCourse: async () => undefined,
+      updatePlayerName: async (next) => setName(next.trim() || 'Preview'),
+      updatePreferences: async (next) => setPreferences(next),
+      setDeviceLinked: async (linked) => setPreferences((current) => ({ ...current, device: { ...current.device, linked } })),
+      recordSwing: async () => undefined,
+      removeSwing: async () => undefined,
+      measurements: {},
+      analyzeSwing: async () => undefined,
+      userId: 'preview',
+      bag,
+      notes,
+      saveHoleNote: async (note) => {
+        setNotes((current) => [...current.filter((item) => item.roundId !== note.roundId || item.holeNumber !== note.holeNumber), note]);
+      },
+      updateBag: async (clubs, handicapIndex) => setBag({ clubs, handicapIndex, starter: false, tendencies: bag.tendencies }),
+      signOut: async () => undefined,
+    };
+  }, [bag, course, currentHole, name, notes, preferences, samples, scores, status, tee]);
+
+  return <GolfContext.Provider value={value}>{children}</GolfContext.Provider>;
+}
+
 export function GolfProvider({ children }: { children: ReactNode }) {
+  if (process.env.EXPO_PUBLIC_PREVIEW === '1') return <PreviewGolf>{children}</PreviewGolf>;
+  return <AccountGolf>{children}</AccountGolf>;
+}
+
+function AccountGolf({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [measurements, setMeasurements] = useState<Record<string, MeasurementRecord>>({});
+  const [bag, setBag] = useState<Bag>({ clubs: STARTER_BAG, handicapIndex: null, starter: true, tendencies: { holes: 0, misses: {} } });
+  const [notes, setNotes] = useState<HoleNote[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -95,10 +247,20 @@ export function GolfProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const runAnalysis = useCallback(async (videoId: string, videoUri: string) => {
+  const runAnalysis = useCallback(async (videoId: string, videoUri: string, club: string) => {
     setMeasurements((current) => ({ ...current, [videoId]: { status: 'pending' } }));
     try {
       const measured = await analyzeSwingVideo(videoUri);
+      const userId = session?.user.id;
+      if (userId) {
+        void saveSwingDocument({
+          userId,
+          videoId,
+          club,
+          angleVector: angleVector(measured.swings[0]?.events ?? []),
+          measured,
+        }).catch(() => undefined);
+      }
       setMeasurements((current) => {
         const next = { ...current, [videoId]: { status: 'ready' as const, measured } };
         void saveMeasurements(next);
@@ -112,7 +274,25 @@ export function GolfProvider({ children }: { children: ReactNode }) {
         return next;
       });
     }
-  }, []);
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    let alive = true;
+    loadBag(session.user.id)
+      .then((next) => {
+        if (alive) setBag(next);
+      })
+      .catch(() => undefined);
+    loadNotes(session.user.id)
+      .then((next) => {
+        if (alive) setNotes(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [session]);
 
   const reload = useCallback(async () => {
     const { data } = await supabase.auth.getSession();
@@ -217,7 +397,7 @@ export function GolfProvider({ children }: { children: ReactNode }) {
       recordSwing: async (input) => {
         const { videoId } = await recordRemoteSwing(input);
         await reload();
-        if (swingApiConfigured()) void runAnalysis(videoId, input.videoUri);
+        if (swingApiConfigured()) void runAnalysis(videoId, input.videoUri, input.club);
       },
       removeSwing: async (swingId) => {
         const videoId = snapshot.swings.find((swing) => swing.id === swingId)?.videoId;
@@ -233,12 +413,27 @@ export function GolfProvider({ children }: { children: ReactNode }) {
         await reload();
       },
       measurements,
-      analyzeSwing: runAnalysis,
+      analyzeSwing: (videoId, videoUri) => runAnalysis(videoId, videoUri, 'Club'),
+      userId: session?.user.id ?? '',
+      bag,
+      notes,
+      saveHoleNote: async (note) => {
+        setNotes((current) => {
+          const rest = current.filter((item) => item.roundId !== note.roundId || item.holeNumber !== note.holeNumber);
+          return [...rest, note];
+        });
+        if (session) await saveNote(session.user.id, note).catch(() => undefined);
+      },
+      updateBag: async (clubs, handicapIndex) => {
+        if (!session) return;
+        const next = await saveBag(session.user.id, clubs, handicapIndex);
+        setBag(next);
+      },
       signOut: async () => {
         await supabase.auth.signOut();
       },
     };
-  }, [reload, snapshot, measurements, runAnalysis]);
+  }, [bag, notes, reload, runAnalysis, session, snapshot, measurements]);
 
   if (error) {
     return (

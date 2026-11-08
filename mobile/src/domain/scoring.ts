@@ -195,6 +195,28 @@ export function sumYards(holes: Pick<HoleInfo, 'yards'>[]): number {
   return holes.reduce((total, hole) => total + hole.yards, 0);
 }
 
+export function averageByHoleNumber(groups: HoleInput[][]): HoleStat[] {
+  const buckets = new Map<number, { par: number; relative: number; count: number }>();
+  for (const holes of groups) {
+    for (const hole of holes) {
+      if (!isScoredHole(hole)) continue;
+      const current = buckets.get(hole.holeNumber) ?? { par: hole.par, relative: 0, count: 0 };
+      current.relative += scoreToPar(hole.strokes, hole.par);
+      current.count += 1;
+      current.par = hole.par;
+      buckets.set(hole.holeNumber, current);
+    }
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([holeNumber, bucket]) => ({
+      holeNumber,
+      par: bucket.par,
+      strokes: bucket.par + bucket.relative / bucket.count,
+      relative: bucket.relative / bucket.count,
+    }));
+}
+
 export function holeScoreToInput(score: HoleScore): HoleInput {
   return {
     holeNumber: score.holeNumber,

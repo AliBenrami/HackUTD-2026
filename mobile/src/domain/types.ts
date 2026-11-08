@@ -21,8 +21,8 @@ export type TeeSet = {
   id: string;
   name: string;
   marker: string;
-  rating: number;
-  slope: number;
+  rating: number | null;
+  slope: number | null;
   holes: HoleInfo[];
 };
 

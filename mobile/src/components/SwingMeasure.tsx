@@ -3,11 +3,11 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, View, type ScrollViewInstance } from 'react-native';
 import Svg, { Circle, Line, Rect } from 'react-native-svg';
 import { SCORE_CUTOFF, type ReviewedSwing } from '../data/swingReview';
+import { classifySwing, replayWindow, roleLabel, roleNote } from '../domain/swingSession';
 import type { SwingMeasurement } from '../services/swing/measurement';
 import { colors } from '../theme/colors';
 import type { BallSample } from '../data/swingReview';
 import { BallTrace } from './BallTrace';
-import { SwingCompare } from './SwingCompare';
 import { AppText } from './ui';
 
 const BONES: ReadonlyArray<readonly [number, number]> = [
@@ -38,20 +38,38 @@ export function MeasuredSwingView({
   measurement,
   footer,
   onAnalyze,
+  focusIndex,
+  autoPlayToken = 0,
+  onAutoPlayDone,
+  passedIds = [],
+  videoId,
+  onPass,
 }: {
   videoUri: string;
   measurement: SwingMeasurement;
   footer: ReactNode;
   onAnalyze?: () => void;
+  focusIndex?: number;
+  autoPlayToken?: number;
+  onAutoPlayDone?: () => void;
+  passedIds?: string[];
+  videoId?: string;
+  onPass?: (id: string) => void;
 }) {
-  const [swingIndex, setSwingIndex] = useState(0);
+  const [swingIndex, setSwingIndex] = useState(focusIndex ?? 0);
   const swing = measurement.swings[swingIndex] ?? measurement.swings[0];
+  useEffect(() => {
+    if (focusIndex == null) return;
+    setSwingIndex(focusIndex);
+  }, [focusIndex]);
+  const swingId = videoId && swing ? `${videoId}:${swing.id}` : null;
   return (
     <View className="mt-4">
       {measurement.swings.length > 1 ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.swingRow}>
           {measurement.swings.map((item, index) => {
             const selected = index === swingIndex;
+            const role = classifySwing(item);
             return (
               <Pressable
                 key={item.id}
@@ -61,7 +79,7 @@ export function MeasuredSwingView({
                 style={[styles.chip, selected && styles.chipSelected]}
               >
                 <AppText weight="semibold" className="text-sm" style={{ color: selected ? colors.ink : colors.mist }}>
-                  Swing {index + 1}
+                  {roleLabel(role)} {index + 1}
                 </AppText>
               </Pressable>
             );
@@ -69,7 +87,17 @@ export function MeasuredSwingView({
         </ScrollView>
       ) : null}
       {swing && swing.events.length > 0 ? (
-        <MeasuredCueVideo key={swing.id} videoUri={videoUri} measurement={measurement} swing={swing} footer={footer} />
+        <MeasuredCueVideo
+          key={swing.id}
+          videoUri={videoUri}
+          measurement={measurement}
+          swing={swing}
+          footer={footer}
+          autoPlayToken={autoPlayToken}
+          onAutoPlayDone={onAutoPlayDone}
+          passed={swingId != null && passedIds.includes(swingId)}
+          onPass={swingId && onPass ? () => onPass(swingId) : undefined}
+        />
       ) : (
         <>
           <SkeletonVideo videoUri={videoUri} measurement={measurement} />
@@ -94,11 +122,19 @@ function MeasuredCueVideo({
   measurement,
   swing,
   footer,
+  autoPlayToken = 0,
+  onAutoPlayDone,
+  passed,
+  onPass,
 }: {
   videoUri: string;
   measurement: SwingMeasurement;
   swing: ReviewedSwing;
   footer: ReactNode;
+  autoPlayToken?: number;
+  onAutoPlayDone?: () => void;
+  passed?: boolean;
+  onPass?: () => void;
 }) {
   const impact = Math.max(0, swing.events.findIndex((event) => event.name === 'Impact'));
   const [eventIndex, setEventIndex] = useState(impact);
@@ -108,7 +144,13 @@ function MeasuredCueVideo({
   const phases = useRef<ScrollViewInstance>(null);
   const parkedRef = useRef(true);
   const cueTimeRef = useRef(swing.events[impact]?.timeS ?? 0);
+  const doneRef = useRef(onAutoPlayDone);
+  doneRef.current = onAutoPlayDone;
+  const replayEndRef = useRef<number | null>(null);
+  const replayArmedRef = useRef(false);
+  const replayTokenRef = useRef(0);
   const cue = swing.events[eventIndex] ?? swing.events[0];
+  const role = classifySwing(swing);
   const swingEnd = swing.events[swing.events.length - 1].timeS + 0.8;
   const player = useVideoPlayer(videoUri, (instance) => {
     instance.timeUpdateEventInterval = 1 / measurement.fps;
@@ -138,6 +180,16 @@ function MeasuredCueVideo({
     const timeSub = player.addListener('timeUpdate', ({ currentTime }) => {
       const frame = Math.max(0, Math.min(measurement.frames.length - 1, Math.round(currentTime * measurement.fps)));
       setPlayFrame((current) => (current === frame ? current : frame));
+      if (replayEndRef.current != null) {
+        if (currentTime <= replayEndRef.current - 0.2) replayArmedRef.current = true;
+        if (replayArmedRef.current && currentTime >= replayEndRef.current) {
+          replayEndRef.current = null;
+          replayArmedRef.current = false;
+          player.pause();
+          doneRef.current?.();
+          return;
+        }
+      }
       if (!player.playing) return;
       if (currentTime >= swingEnd) {
         player.pause();
@@ -158,6 +210,28 @@ function MeasuredCueVideo({
   useEffect(() => {
     phases.current?.scrollTo({ x: Math.max(0, eventIndex * 84 - 24), animated: true });
   }, [eventIndex]);
+
+  useEffect(() => {
+    if (!autoPlayToken || replayTokenRef.current === autoPlayToken) return;
+    replayTokenRef.current = autoPlayToken;
+    const window = replayWindow(swing.events);
+    if (!window) {
+      doneRef.current?.();
+      return;
+    }
+    replayEndRef.current = window.end;
+    replayArmedRef.current = false;
+    parkedRef.current = false;
+    setParked(false);
+    cueTimeRef.current = window.start;
+    const play = () => {
+      player.currentTime = window.start;
+      player.play();
+    };
+    play();
+    const timers = [80, 240].map((delay) => setTimeout(play, delay));
+    return () => timers.forEach(clearTimeout);
+  }, [autoPlayToken, player, swing.events]);
 
   function selectPhase(index: number) {
     const time = swing.events[index].timeS;
@@ -225,13 +299,16 @@ function MeasuredCueVideo({
       {(swing.ball ?? []).length > 0 ? (
         <AppText className="mt-2 text-sm text-slate">Ball flight from the detector. It stops when the ball is lost.</AppText>
       ) : null}
+      <AppText className="mt-2 text-sm" style={{ color: role === 'shot' ? colors.cyan : '#FFC850' }}>
+        {roleLabel(role)}
+      </AppText>
+      <AppText className="mt-1 text-sm text-slate">{roleNote(role)}</AppText>
       <View className="mt-5">
         <AngleRow label="" left="Left" right="Right" muted />
         <AngleRow label="Elbow" left={degrees(cue.angles.leftElbow)} right={degrees(cue.angles.rightElbow)} />
         <AngleRow label="Knee" left={degrees(cue.angles.leftKnee)} right={degrees(cue.angles.rightKnee)} />
         <AngleRow label="Torso" left={degrees(cue.angles.torsoTilt)} right="" />
       </View>
-      <SwingCompare swing={swing} phaseName={cue.name} />
     </View>
   );
 }

@@ -50,7 +50,9 @@ export default function RootLayout() {
             <Stack.Screen name="course/[id]" />
             <Stack.Screen name="scorecard" />
             <Stack.Screen name="settings" />
+            <Stack.Screen name="bag" />
             <Stack.Screen name="record" options={{ animation: 'slide_from_bottom' }} />
+            <Stack.Screen name="challenge" />
           </Stack>
         </GolfProvider>
       </DBErrorBoundary>

@@ -6,3 +6,4 @@ av>=14
 mediapipe>=0.10.18
 ultralytics>=8.3
 pytest>=8.3
+pymongo>=4.9

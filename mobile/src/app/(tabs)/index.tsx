@@ -33,7 +33,7 @@ export default function HomeScreen() {
       </View>
 
       <View className="h-56 overflow-hidden rounded-3xl border border-white/10 bg-panel">
-        <TopoMap seed={seed} animate />
+        <TopoMap seed={seed} animate sketch />
       </View>
       <AppText className="mb-6 mt-3 text-sm text-slate">
         {activeRound

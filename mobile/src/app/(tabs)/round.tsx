@@ -1,15 +1,20 @@
 import { router } from 'expo-router';
 import { ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react-native';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Alert, Pressable, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSequence, withTiming } from 'react-native-reanimated';
+import { HoleRail } from '../../components/HoleRail';
+import { HoleTools, type HoleDraft } from '../../components/HoleTools';
 import { TopoMap } from '../../components/TopoMap';
+import { holeDrawing } from '../../data/courseMaps';
+import { getCourse } from '../../data/courses';
 import { AppText, Button, IconButton, Screen } from '../../components/ui';
 import { formatDistance, formatRelative } from '../../domain/format';
 import { holeResult, holeScoreToInput, summarizeHoles } from '../../domain/scoring';
 import type { HoleScore } from '../../domain/types';
 import { hapticSelect, hapticSuccess } from '../../lib/haptics';
 import { useReducedMotion } from '../../hooks/useReducedMotion';
+import { requestRecap } from '../../services/golf/client';
 import { useGolf } from '../../state/GolfContext';
 import { colors, resultTone } from '../../theme/colors';
 
@@ -25,7 +30,7 @@ export default function RoundScreen() {
           Round
         </AppText>
         <View className="mt-5 h-48 overflow-hidden rounded-3xl border border-white/10 bg-panel">
-          <TopoMap seed="no-round" animate />
+          <TopoMap seed="no-round" animate sketch />
         </View>
         <AppText className="mt-4 text-base text-slate">
           No round is in progress. Pick a course when you are ready to keep score.
@@ -44,6 +49,7 @@ export default function RoundScreen() {
       courseId={activeRound.courseId}
       courseName={activeRound.courseName}
       teeName={activeRound.teeSetName}
+      sample={activeRound.sample}
       status={activeRound.status}
       hole={current}
       holes={holes}
@@ -60,6 +66,7 @@ function ActiveRound({
   courseId,
   courseName,
   teeName,
+  sample,
   status,
   hole,
   holes,
@@ -72,6 +79,7 @@ function ActiveRound({
   courseId: string;
   courseName: string;
   teeName: string;
+  sample: boolean;
   status: 'active' | 'completed';
   hole: HoleScore;
   holes: HoleScore[];
@@ -87,7 +95,17 @@ function ActiveRound({
   onFocus: (holeNumber: number) => Promise<void>;
   onFinish: () => Promise<void>;
 }) {
+  const { userId, bag, notes, saveHoleNote, preferences } = useGolf();
   const reduced = useReducedMotion();
+  const tools = useRef<HoleDraft>({ miss: null, gir: null, pin: 'middle', shots: [], club: null, cardId: null });
+  const onTools = useCallback((draft: HoleDraft) => {
+    tools.current = draft;
+  }, []);
+  const savedNote = notes.find((note) => note.roundId === roundId && note.holeNumber === hole.holeNumber) ?? null;
+  const mapped = holeDrawing(courseId, hole.holeNumber, teeName);
+  const catalogHole = getCourse(courseId)
+    ?.teeSets.find((tee) => tee.name === teeName)
+    ?.holes.find((item) => item.number === hole.holeNumber);
   const [strokes, setStrokes] = useState(hole.strokes ?? hole.par);
   const [putts, setPutts] = useState<number | null>(hole.putts);
   const [penalties, setPenalties] = useState<number | null>(hole.penalties);
@@ -141,8 +159,45 @@ function ActiveRound({
 
   async function persist() {
     await onSave(draft());
+    const detail = tools.current;
+    await saveHoleNote({
+      roundId,
+      holeNumber: hole.holeNumber,
+      par: hole.par,
+      strokes,
+      sample,
+      miss: detail.miss,
+      gir: detail.gir,
+      pin: detail.pin,
+      club: detail.club,
+      cardId: detail.cardId,
+      shots: detail.shots,
+    });
     hapticSuccess();
     setFlash(`Hole ${hole.holeNumber} saved`);
+  }
+
+  async function finishRound() {
+    await onFinish();
+    const played = [
+      ...notes.filter((note) => note.roundId === roundId && note.holeNumber !== hole.holeNumber),
+      {
+        roundId,
+        holeNumber: hole.holeNumber,
+        par: hole.par,
+        strokes,
+        sample,
+        miss: tools.current.miss,
+        gir: tools.current.gir,
+        pin: tools.current.pin,
+        club: tools.current.club,
+        cardId: tools.current.cardId,
+        shots: tools.current.shots,
+      },
+    ];
+    await requestRecap(userId, roundId, { strokes: stats.totalStrokes, relative: stats.relativeToPar }, played).catch(
+      () => undefined,
+    );
   }
 
   function goTo(holeNumber: number) {
@@ -171,7 +226,7 @@ function ActiveRound({
       return;
     }
     if (status === 'active') {
-      await onFinish();
+      await finishRound();
       setFlash('Round saved');
     }
   }
@@ -201,9 +256,11 @@ function ActiveRound({
         </Pressable>
       </View>
 
-      <View className="h-36 overflow-hidden rounded-3xl border border-white/10 bg-panel">
-        <TopoMap seed={`${courseId}-${hole.holeNumber}`} animate />
-      </View>
+      {mapped ? null : (
+        <View className="h-36 overflow-hidden rounded-3xl border border-white/10 bg-panel">
+          <TopoMap seed={`${courseId}-${hole.holeNumber}`} animate sketch />
+        </View>
+      )}
 
       <View className="mt-4 flex-row items-center justify-between">
         <IconButton
@@ -225,6 +282,7 @@ function ActiveRound({
           <ChevronRight color={colors.mist} size={22} />
         </IconButton>
       </View>
+      <HoleRail holes={holes} current={hole.holeNumber} onSelect={goTo} />
 
       <View className="mt-6 flex-row items-center justify-between">
         <IconButton
@@ -275,24 +333,36 @@ function ActiveRound({
         ) : null}
       </View>
 
+      <HoleTools
+        userId={userId}
+        roundId={roundId}
+        courseId={courseId}
+        courseName={courseName}
+        teeName={teeName}
+        holeNumber={hole.holeNumber}
+        par={hole.par}
+        yards={hole.yards}
+        handicap={catalogHole?.handicap ?? 1}
+        windOn={preferences.hud.showWind}
+        bag={bag.clubs}
+        saved={savedNote}
+        onChange={onTools}
+      />
+      <View className="mt-4 rounded-3xl border border-white/10 bg-panel p-4">
+        <Stepper label="Putts" value={putts} onChange={setPutts} max={strokes} />
+      </View>
       <Pressable
         accessibilityRole="button"
         onPress={() => setAdvanced((open) => !open)}
-        className="mt-6 min-h-11 justify-center"
+        className="mt-4 min-h-11 justify-center"
       >
         <AppText weight="medium" className="text-sm text-slate">
-          {advanced ? 'Hide details' : 'Putts, penalties, fairway'}
+          {advanced ? 'Hide details' : 'Penalties and fairway'}
         </AppText>
       </Pressable>
       {advanced ? (
         <View className="mt-2 rounded-3xl border border-white/10 bg-panel p-4">
-          <Stepper
-            label="Putts"
-            value={putts}
-            onChange={setPutts}
-            max={strokes}
-          />
-          <View className="mt-4">
+          <View>
             <Stepper label="Penalty strokes" value={penalties} onChange={setPenalties} max={strokes} />
             <AppText className="mt-2 text-xs text-slate">
               Penalties are already part of the stroke count. They are not added again.
@@ -335,7 +405,7 @@ function ActiveRound({
               `${unplayed} ${unplayed === 1 ? 'hole is' : 'holes are'} still blank. Blank holes will not change your averages.`,
               [
                 { text: 'Keep playing', style: 'cancel' },
-                { text: 'End round', onPress: () => void onFinish() },
+                { text: 'End round', onPress: () => void finishRound() },
               ],
             );
           }}
