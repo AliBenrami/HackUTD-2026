@@ -7,4 +7,6 @@ sdk/
 # Machine-local downloaded model, calibration and generated cache.
 /models/
 table_calib.json
-assets/.golf-cache/
+/obstacle_layout.json
+/course_layout.json
+assets/.cyberpunk-cache/

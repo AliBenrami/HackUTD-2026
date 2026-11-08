@@ -86,7 +86,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="orientation-only tracking (default 6DoF)")
     p.add_argument("--look", metavar="YAW,PITCH", default=None,
                    help="pin the desktop/synthetic view, degrees "
-                        "(test hook; ignored with --provider viture)")
+                         "(test hook; ignored with --provider viture)")
+    p.add_argument("--view-pos", metavar="X,Y,Z", default=None,
+                   help="desktop diagnostic eye position in metres (test hook)")
     p.add_argument("--video-panel", action="store_true",
                    help="legacy path: show the live camera feed on a "
                         "world-locked panel (default: pure optical, off)")
@@ -120,10 +122,66 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="marker-assisted tabletop AR: detect the ArUco "
                         "table target on the glasses camera, anchor virtual "
                         "objects to the physical table (implicit in golf/gallery)")
-    p.add_argument("--scene", choices=("calibration", "golf-demo", "asset-gallery"),
-                   default="golf-demo", help="visual scene (default %(default)s)")
+    p.add_argument("--scene", choices=("calibration", "golf-demo", "fixed-demo",
+                   "procedural", "asset-gallery"),
+                   default="procedural", help="visual scene (default %(default)s; "
+                   "procedural generates a new terrain, fixed-demo shows a "
+                   "deterministic cyberpunk style proof)")
+    p.add_argument("--difficulty", choices=("easy", "medium", "hard"),
+                   default="medium", help="initial procedural course difficulty")
+    p.add_argument("--course-seed", "--seed", dest="course_seed", type=int,
+                   default=None,
+                   help="initial procedural course seed (default: random each "
+                   "launch, logged to stderr; fixed value reproduces a course)")
+    p.add_argument("--course-margin", type=float, default=.03, metavar="M",
+                   help="procedural course margin inside physical tabletop")
+    p.add_argument("--course-decor", type=int, default=4, metavar="N",
+                   help="decorative object count, independent of difficulty")
+    p.add_argument("--course-layout", default="course_layout.json", metavar="PATH",
+                   help="path for explicit generated-course save/load")
+    p.add_argument("--no-neon", action="store_true",
+                   help="start with emissive neon accents disabled (Alt+N toggles)")
+    p.add_argument("--bloom", action=argparse.BooleanOptionalAction, default=None,
+                   help="enable/disable restrained bloom (preset default; Alt+B toggles)")
+    p.add_argument("--bloom-threshold", type=float, default=.70, metavar="N")
+    p.add_argument("--bloom-intensity", type=float, default=.55, metavar="N")
+    p.add_argument("--bloom-size", choices=("small", "medium", "large"),
+                   default="small")
+    p.add_argument("--quality", choices=("performance", "balanced", "quality"),
+                   default="balanced", help="graphics preset (default %(default)s)")
+    p.add_argument("--msaa", type=int, choices=(0, 2, 4, 8), default=None,
+                   help="requested framebuffer samples (default from --quality)")
+    p.add_argument("--graphics-debug", action="store_true",
+                   help="log framebuffer, mesh, materials and frame-time diagnostics")
     p.add_argument("--assets-dir", default=None, metavar="DIR",
                    help="downloaded asset archives (default ~/hackutd26_assets or HACKUTD_ASSETS_DIR)")
+    from golf_specs import (BALL_DIAMETER_M, COURSE_SCALE,
+                            COURSE_SCALE_MAX, COURSE_SCALE_MIN)
+    p.add_argument("--course-scale", type=float, default=COURSE_SCALE,
+                   metavar="S", help="uniform whole-course scale on course-scale-root "
+                   f"(child of golf-stage-root; default %(default)s; live range "
+                   f"{COURSE_SCALE_MIN}-{COURSE_SCALE_MAX} via Shift+[/]; "
+                   "table anchor and tracking are not scaled)")
+    p.add_argument("--course-yaw", type=float, default=0.0, metavar="DEG",
+                   help="initial course-only yaw diagnostic (table anchor unchanged)")
+    p.add_argument("--scale-diagnostic", action="store_true",
+                   help="temporary diagnostic: scale the SAME assembled course by "
+                   "relative 1.00/0.50/0.25 on course-scale-root without "
+                   "regenerating, verify world-space halving numerically, then exit")
+    p.add_argument("--ball-diameter", type=float, default=BALL_DIAMETER_M,
+                   metavar="M", help="independent physical golf-ball diameter, metres "
+                   "(default %(default)s; stage scaling never changes it)")
+    p.add_argument("--prop-scale", type=float, default=1.0,
+                   metavar="S", help="retired per-prop multiplier (kept for compatibility; "
+                   "must be 1.0, course scaling uses --course-scale)")
+    p.add_argument("--obstacle-debug", action="store_true",
+                   help="show RGB/top-down/reference/mask on laptop (requires desktop display)")
+    p.add_argument("--obstacle-resolution", type=int, default=500, metavar="PX/M",
+                   help="top-down camera processing pixels per metre (default %(default)s)")
+    p.add_argument("--obstacle-height", type=float, default=.055, metavar="M",
+                   help="unmeasured default static collider height in metres")
+    p.add_argument("--obstacle-layout", default="obstacle_layout.json", metavar="PATH",
+                   help="machine-local obstacle layout (save/load by keys)")
     p.add_argument("--table-w", type=float, default=0.60, metavar="M",
                    help="physical table width, metres (default %(default)s)")
     p.add_argument("--table-l", type=float, default=0.40, metavar="M",
@@ -224,12 +282,28 @@ class VitureARApp:
         from direct.showbase.ShowBase import ShowBase
         from panda3d.core import PerspectiveLens, loadPrcFileData
 
+        quality = {
+            "performance": {"msaa": 2, "grid": 65, "shader": False,
+                            "anisotropy": 4, "bloom": False, "srgb": False},
+            # Bloom stays opt-in in the low-latency default; emissive geometry
+            # carries the look without forcing an offscreen compositor.
+            "balanced": {"msaa": 4, "grid": 97, "shader": True,
+                         "anisotropy": 8, "bloom": False, "srgb": True},
+            "quality": {"msaa": 8, "grid": 129, "shader": True,
+                        "anisotropy": 8, "bloom": True, "srgb": True},
+        }[args.quality].copy()
+        quality["msaa"] = quality["msaa"] if args.msaa is None else args.msaa
+        quality["bloom"] = quality["bloom"] if args.bloom is None else args.bloom
+        self.graphics = quality
         if args.smoke_frames > 0:
             loadPrcFileData("", "window-type none")
         else:
             loadPrcFileData("", "load-display pandagl")
             loadPrcFileData("", "audio-library-name null")
             loadPrcFileData("", "window-title Viture AR PoC")
+            loadPrcFileData("", f"framebuffer-multisample {1 if quality['msaa'] else 0}")
+            loadPrcFileData("", f"multisamples {quality['msaa']}")
+            loadPrcFileData("", f"framebuffer-srgb {1 if quality['srgb'] else 0}")
             # Detect the glasses output BEFORE configuring the window so
             # fullscreen requests the panel's native size (requesting
             # 1920x1080 on the 1920x1200 panel risks letterbox/stretch).
@@ -269,6 +343,9 @@ class VitureARApp:
         self.base = ShowBase()
         self.base.disableMouse()
         self.base.setBackgroundColor(0, 0, 0, 1)  # black == transparent
+        if self.base.win is not None:
+            from panda3d.core import AntialiasAttrib
+            self.base.render.set_antialias(AntialiasAttrib.M_multisample)
 
         # Everything AR lives under gl_space, expressed in GL coordinates.
         self.gl_space = self.base.render.attachNewNode("gl-space")
@@ -353,6 +430,10 @@ class VitureARApp:
 
         if self.table is not None and args.scene != "calibration":
             self._setup_golf(args)
+        self.obstacles = None
+        if self.table is not None and args.scene in ("golf-demo", "fixed-demo",
+                                                     "procedural"):
+            self._setup_obstacles(args)
 
         self.base.taskMgr.add(self._update, "ar-update")
 
@@ -437,6 +518,14 @@ class VitureARApp:
                     provider.set_fixed(float(yaw_s), float(pitch_s))
                 except ValueError:
                     raise SystemExit("--look must look like YAW,PITCH")
+            if args.view_pos:
+                try:
+                    values = [float(v) for v in args.view_pos.split(",")]
+                    if len(values) != 3:
+                        raise ValueError
+                    provider.set_position(*values)
+                except ValueError:
+                    raise SystemExit("--view-pos must look like X,Y,Z")
             return provider
         if args.provider == "synthetic":
             return providers.SinePoseProvider()
@@ -671,17 +760,24 @@ class VitureARApp:
         from panda3d.core import AmbientLight, DirectionalLight
 
         amb = AmbientLight("table-amb")
-        amb.set_color((0.5, 0.5, 0.5, 1.0))
+        amb.set_color((0.22, 0.27, 0.32, 1.0))
         amb_np = table_stage.attach_new_node(amb)
         table_stage.set_light(amb_np)
         key = DirectionalLight("table-key")
-        key.set_color((1.0, 1.0, 1.0, 1.0))
+        key.set_color((0.92, 0.95, 1.0, 1.0))
         key_np = table_stage.attach_new_node(key)
         # Light +Y aims at the surface (DirectionalLight shines along
         # its node's +Y); from up-left so boxes shade on two faces.
         key_np.set_pos(-0.4, -0.4, 1.0)
         key_np.look_at(0.0, 0.0, 0.0)
         table_stage.set_light(key_np)
+        fill = DirectionalLight("table-fill")
+        fill.set_color((.16, .27, .31, 1.0))
+        fill_np = table_stage.attach_new_node(fill)
+        fill_np.set_hpr(135, -35, 0)
+        table_stage.set_light(fill_np)
+        if self.graphics["shader"]:
+            table_stage.set_shader_auto()
 
         calib_path = args.table_calib
         saved = tabletop.load_calibration(calib_path)
@@ -775,16 +871,60 @@ class VitureARApp:
 
     def _setup_golf(self, args) -> None:
         from golf_assets import AssetManager
+        from golf_specs import COURSE_SCALE
         import golf_scene
 
-        self.golf_assets = AssetManager(self.base.loader, args.assets_dir)
+        if abs(float(args.prop_scale) - 1.0) > 1e-9:
+            raise ValueError("--prop-scale is retired; use --course-scale (must leave --prop-scale at 1.0)")
+        self.course_scale = float(args.course_scale)
+        self.ball_diameter = float(args.ball_diameter)
+        from golf_specs import BALL_DIAMETER_MAX_M, BALL_DIAMETER_MIN_M
+        if not BALL_DIAMETER_MIN_M <= self.ball_diameter <= BALL_DIAMETER_MAX_M:
+            raise ValueError("--ball-diameter must be between 0.020 and 0.043 metres")
+        self.golf_assets = AssetManager(self.base.loader, args.assets_dir,
+                                        prop_scale=1.0,
+                                        anisotropic_degree=self.graphics["anisotropy"])
+        # Single-owner hierarchy: manual nudge lives on golf-stage-root
+        # (position/yaw only, scale stays 1); the assembled course scale
+        # lives ONLY on course-scale-root. Generation never writes either
+        # scale; ball nodes compensate by exactly 1/scale so the gameplay
+        # ball keeps its configured world diameter.
         self.golf_stage = self.table["stage"].attach_new_node("golf-stage-root")
-        self.golf_offset = [0.0, 0.0, 0.0, 0.0, 1.0]  # x,y,z,yaw,scale
-        if args.scene == "golf-demo":
-            self.golf_course, self.golf_objects = golf_scene.build_course(
-                self.golf_stage, self.golf_assets, args.table_w, args.table_l)
-            print(f"[golf] loaded {len(self.golf_objects)} course objects", file=sys.stderr)
+        self.golf_stage.set_h(float(args.course_yaw))
+        self.golf_scale_root = self.golf_stage.attach_new_node("course-scale-root")
+        self.golf_scale_root.set_scale(self.course_scale)
+        self.golf_offset = [0.0, 0.0, 0.0, float(args.course_yaw), self.course_scale]
+        self.course_layout = None
+        self.course_previous = None
+        if args.course_seed is None:
+            import secrets as _secrets
+            self.course_seed = _secrets.randbelow(2**31)
+            print(f"[golf] random seed={self.course_seed} (pass --seed to reproduce)",
+                  file=sys.stderr)
         else:
+            self.course_seed = args.course_seed
+        self.course_difficulty = args.difficulty
+        self.course_seed_input = None
+        if args.scene in ("golf-demo", "fixed-demo", "procedural"):
+            self.golf_course, self.golf_objects = golf_scene.build_course(
+                self.golf_scale_root, self.golf_assets, args.table_w, args.table_l,
+                course_scale=self.course_scale, ball_diameter=self.ball_diameter)
+            print(f"[golf] loaded {len(self.golf_objects)} course objects", file=sys.stderr)
+            self._log_course_dims("initial cyber style proof")
+            self._audit_scale("setup")
+            self._setup_course_controls()
+            self.neon_enabled = True
+            self.bloom_enabled = False
+            self._bloom_filters = None
+            if args.no_neon:
+                self._toggle_neon()
+            if self.graphics["bloom"]:
+                self._toggle_bloom()
+            if args.scene == "procedural":
+                self._course_generate()
+        else:
+            # Debug inspector layer: deliberately outside course-scale-root
+            # so single-asset inspection stays at inspection size.
             self.gallery = golf_scene.Gallery(self.golf_stage, self.golf_assets, self.base)
             self.base.accept("tab", self.gallery.cycle, [1])
             self.base.accept("shift-tab", self.gallery.cycle, [-1])
@@ -804,21 +944,841 @@ class VitureARApp:
             self.base.accept(key, self._move_golf_stage, [delta])
         self.base.accept("shift-9", self._reset_golf_stage)
 
+    def _setup_course_controls(self) -> None:
+        for key, difficulty in (("alt-1", "easy"), ("alt-2", "medium"),
+                                ("alt-3", "hard")):
+            self.base.accept(key, self._course_difficulty, [difficulty])
+        for key, fn in (("alt-g", self._course_random),
+                        ("alt-r", self._course_generate),
+                        ("alt-f", self._course_fixed),
+                        ("alt-z", self._course_restore_previous),
+                        ("alt-s", self._course_save),
+                        ("alt-l", self._course_load),
+                        ("alt-t", self._course_seed_start),
+                        ("alt-v", self._toggle_course_debug),
+                        ("alt-n", self._toggle_neon),
+                        ("alt-b", self._toggle_bloom),
+                        ("alt-enter", self._course_seed_apply),
+                        ("alt-backspace", self._course_seed_backspace)):
+            self.base.accept(key, fn)
+        for digit in "0123456789":
+            self.base.accept("control-" + digit, self._course_seed_digit, [digit])
+        print("[golf] Alt+1/2/3 easy/medium/hard, Alt+G new seed, Alt+R "
+              "regenerate, Alt+F fixed, Alt+Z restore previous, Alt+S save, "
+              "Alt+L load; Alt+V debug, Alt+N neon, Alt+B bloom; "
+              "Alt+T enter seed, Ctrl+digits, Alt+Enter apply",
+              file=sys.stderr)
+
+    def _toggle_course_debug(self):
+        debug = self.golf_course.get_python_tag("debug_node")
+        if debug is not None:
+            debug.show() if debug.is_hidden() else debug.hide()
+
+    def _toggle_neon(self):
+        self.neon_enabled = not getattr(self, "neon_enabled", True)
+        for node in self.golf_course.find_all_matches("**/*"):
+            if node.get_python_tag("neon"):
+                if self.neon_enabled:
+                    node.show()
+                else:
+                    node.hide()
+        self.golf_course.set_python_tag("neon_enabled", self.neon_enabled)
+        print(f"[cyber] neon {'on' if self.neon_enabled else 'off'}", file=sys.stderr)
+
+    def _toggle_bloom(self):
+        # CommonFilters is optional and intentionally desktop/mono only; its
+        # failure never affects the black optical background or core scene.
+        if getattr(self, "bloom_enabled", False):
+            if self._bloom_filters is not None:
+                self._bloom_filters.cleanup()
+            self._bloom_filters = None
+            self.bloom_enabled = False
+        elif self.base.win is not None and not self.stereo:
+            try:
+                from direct.filter.CommonFilters import CommonFilters
+                filters = CommonFilters(self.base.win, self.base.cam)
+                threshold = max(0., min(1., self.args.bloom_threshold))
+                intensity = max(0., min(3., self.args.bloom_intensity))
+                # blend is the RGB luminance weighting in Panda's bloom shader;
+                # its alpha term must stay zero or the whole frame blooms.
+                if filters.setBloom(blend=(.30, .40, .30, 0.0),
+                                    mintrigger=threshold,
+                                    maxtrigger=1.0, desat=0, intensity=intensity,
+                                    size=self.args.bloom_size):
+                    self._bloom_filters = filters
+                    self.bloom_enabled = True
+                    if self.args.graphics_debug:
+                        buffers = getattr(getattr(filters, "manager", None),
+                                          "buffers", ())
+                        samples = [b.get_fb_properties().get_multisamples()
+                                   for b in buffers]
+                        print(f"[graphics] bloom buffers MSAA={samples or 'unknown'} "
+                              f"threshold={threshold:.2f} intensity={intensity:.2f} "
+                              f"size={self.args.bloom_size}", file=sys.stderr)
+            except Exception as exc:
+                print(f"[cyber] bloom unavailable: {exc}", file=sys.stderr)
+        print(f"[cyber] bloom {'on' if self.bloom_enabled else 'off'}", file=sys.stderr)
+
+    def _course_swap(self, layout):
+        import course_generator
+        import golf_scene
+        from panda3d.core import NodePath
+
+        if layout is not None:
+            valid, diag = course_generator.validate(layout)
+            if (not valid or list(layout["table_m"]) !=
+                    [self.args.table_w, self.args.table_l]):
+                raise ValueError(f"course invalid or table dimensions differ: {diag}")
+            adopted = float(layout.get("course_scale", self.course_scale))
+            if abs(adopted - self.course_scale) > 1e-9:
+                print(f"[golf] adopting layout design scale {adopted:.2f} "
+                      f"(was {self.course_scale:.2f})", file=sys.stderr)
+            self.course_scale = adopted
+            adopted_ball = float(layout.get("ball_diameter_m", self.ball_diameter))
+            if abs(adopted_ball-self.ball_diameter) > 1e-9:
+                print(f"[golf] adopting layout ball diameter {adopted_ball:.3f}m "
+                      f"(was {self.ball_diameter:.3f}m)", file=sys.stderr)
+            self.ball_diameter = adopted_ball
+        # Build under a hidden root before touching the visible course.
+        # Generation only READS the live scale as an authoring input; the
+        # single write of course-scale-root scale happens below, so the
+        # hierarchy below the scale root is fully rebuilt while the scale
+        # owner itself is never replaced.
+        pending = NodePath("course-pending")
+        try:
+            course, objects = golf_scene.build_course(
+                pending, self.golf_assets, self.args.table_w,
+                self.args.table_l, layout=layout if layout is not None else golf_scene.LAYOUT,
+                course_scale=self.course_scale, ball_diameter=self.ball_diameter)
+        except Exception:
+            pending.remove_node()
+            raise
+        old_course = self.golf_course
+        previous = old_course.get_parent()
+        pending.reparent_to(self.golf_scale_root)
+        self.golf_scale_root.set_scale(self.course_scale)
+        self.golf_offset[4] = self.course_scale
+        self.golf_course = course
+        self.golf_objects = objects
+        self.course_previous = (self.course_layout, self.course_seed,
+                                self.course_difficulty)
+        self.course_layout = layout
+        if hasattr(self, "neon_enabled") and not self.neon_enabled:
+            for node in self.golf_course.find_all_matches("**/*"):
+                if node.get_python_tag("neon"):
+                    node.hide()
+        updater = getattr(self, "_update_physical_obstacle_heights", None)
+        if updater is not None:
+            updater()
+        # Existing initial course is directly below the scale root; later
+        # courses have a dedicated pending parent.
+        old_course.remove_node()
+        if previous != self.golf_scale_root:
+            previous.remove_node()
+        self._log_course_dims("swap" if layout is not None else "cyber style proof")
+        if layout is not None:
+            self._log_generation_report(layout)
+
+    def _log_generation_report(self, layout):
+        import sys as _sys
+        validation = layout.get("validation", {})
+        objects = layout.get("objects", [])
+        decor = len(layout.get("decor", []))
+        blocking = [c for c in validation.get("interference", [])
+                    if c in ("directly obstructing", "partially obstructing")]
+        print(f"[golf-report] Seed: {layout.get('seed')} "
+              f"Difficulty: {layout.get('difficulty')} "
+              f"Course archetype: {layout.get('archetype', '?')} "
+              f"Course dimensions: {self._measure_course()['course'][0]:.3f}x"
+              f"{self._measure_course()['course'][1]:.3f}m "
+              f"Number of segments: {layout.get('segments', '?')} "
+              f"Number of turns: {layout.get('turns', '?')} "
+              f"Number of gameplay obstacles: {len(layout.get('obstacles', []))} "
+              f"Number of decorative props: {decor} "
+              f"Direct route obstructed: {bool(blocking)} "
+              f"Traversable route exists: {layout.get('preferred_route') is not None} "
+              f"Generation attempts: {layout.get('generation_attempts', '?')} "
+              f"Validation result: {validation}",
+              file=_sys.stderr)
+
+    def _course_restore_previous(self):
+        if not getattr(self, "course_previous", None):
+            print("[golf] no previous layout to restore", file=sys.stderr)
+            return
+        layout, seed, difficulty = self.course_previous
+        try:
+            self._course_swap(layout)
+            if layout is not None:
+                self.course_seed = seed
+                self.course_difficulty = difficulty
+            print("[golf] restored previous layout", file=sys.stderr)
+        except (ValueError, OSError) as exc:
+            print(f"[golf] restore failed; current course retained: {exc}",
+                  file=sys.stderr)
+
+    def _course_generate(self):
+        import course_generator
+        try:
+            layout = course_generator.generate(
+                self.course_seed, self.args.table_w, self.args.table_l,
+                self.course_difficulty, self.args.course_margin,
+                self.args.course_decor, self.course_scale,
+                reserved=self._reserved_footprints(),
+                grid_size=self.graphics["grid"],
+                ball_diameter_m=self.ball_diameter)
+            self._course_swap(layout)
+            print(f"[golf] seed={self.course_seed} {self.course_difficulty} "
+                  f"fallback={layout['fallback']} {layout['validation']}", file=sys.stderr)
+        except (ValueError, OSError) as exc:
+            print(f"[golf] generation failed; previous course retained: {exc}", file=sys.stderr)
+
+    def _reserved_footprints(self):
+        """Confirmed physical-object footprints (final metres) for the
+        generator to avoid. Clean interface: generator takes rects, the
+        CV/detection system stays untouched."""
+        try:
+            visuals = getattr(self, "obstacle_visuals", None)
+            if visuals is None:
+                return []
+            rects = []
+            for node, visual, outline, item in visuals.nodes.values():
+                rects.append((float(item.x), float(item.y),
+                              float(item.width)/2, float(item.length)/2))
+            return rects
+        except Exception:
+            return []
+
+    def _update_physical_obstacle_heights(self):
+        visuals = getattr(self, "obstacle_visuals", None)
+        if visuals is None:
+            return
+        layout = self.course_layout
+        if layout is None and getattr(self, "golf_course", None) is not None:
+            layout = self.golf_course.get_python_tag("layout")
+        if not layout:
+            visuals.set_height_query(None)
+            return
+        import course_generator
+        scale = self.course_scale
+        visuals.set_height_query(
+            lambda x, y: course_generator.terrain_height(layout, x/scale, y/scale)*scale)
+
+    def _course_difficulty(self, value):
+        self.course_difficulty = value
+        self._course_generate()
+
+    def _course_random(self):
+        import secrets
+        self.course_seed = secrets.randbelow(2**31)
+        self._course_generate()
+
+    def _course_fixed(self):
+        try:
+            self._course_swap(None)
+            print("[golf] restored deterministic cyberpunk style proof", file=sys.stderr)
+        except (ValueError, OSError) as exc:
+            print(f"[golf] fixed course failed: {exc}", file=sys.stderr)
+
+    def _course_seed_start(self):
+        self.course_seed_input = ""
+        print("[golf] enter seed with Ctrl+digits, Alt+Enter to generate", file=sys.stderr)
+
+    def _course_seed_digit(self, digit):
+        if self.course_seed_input is not None:
+            self.course_seed_input = (self.course_seed_input + digit)[-12:]
+            print(f"[golf] seed input: {self.course_seed_input}", file=sys.stderr)
+
+    def _course_seed_backspace(self):
+        if self.course_seed_input is not None:
+            self.course_seed_input = self.course_seed_input[:-1]
+
+    def _course_seed_apply(self):
+        if self.course_seed_input:
+            self.course_seed = int(self.course_seed_input)
+            self.course_seed_input = None
+            self._course_generate()
+
+    def _course_save(self):
+        import json
+        if self.course_layout is None:
+            print("[golf] style proof: no generated layout to save", file=sys.stderr)
+            return
+        try:
+            with open(self.args.course_layout, "w") as f:
+                json.dump(self.course_layout, f, indent=2)
+            print(f"[golf] saved {self.args.course_layout}", file=sys.stderr)
+        except OSError as exc:
+            print(f"[golf] save failed: {exc}", file=sys.stderr)
+
+    def _course_load(self):
+        import json
+        try:
+            with open(self.args.course_layout) as f:
+                layout = json.load(f)
+            self._course_swap(layout)
+            self.course_seed = layout["seed"]
+            self.course_difficulty = layout["difficulty"]
+            print(f"[golf] loaded {self.args.course_layout}", file=sys.stderr)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"[golf] load failed; previous course retained: {exc}", file=sys.stderr)
+
+    def _setup_obstacles(self, args) -> None:
+        import obstacle_visuals
+        import physical_obstacles
+
+        self.obstacle_visuals = obstacle_visuals.ObstacleVisuals(
+            self.table["stage"], self.golf_assets, max(.005, args.obstacle_height))
+        self._update_physical_obstacle_heights()
+        self.obstacles = physical_obstacles.ObstacleWorker(
+            args.table_w, args.table_l, max(100, min(1000, args.obstacle_resolution)),
+            args.obstacle_debug and args.smoke_frames == 0)
+        self.obstacle_selected = None
+        self.obstacle_scan = False
+        self.obstacle_auto = True
+        self.obstacle_candidates = {}
+        self.obstacle_last_seq = -1
+        self.obstacle_error_count = 0
+        self.obstacle_last_submit = 0.0
+        keys = {
+            "shift-b": self._obstacle_baseline,
+            "shift-a": self._obstacle_auto,
+            "shift-s": self._obstacle_scan,
+            "shift-c": self._obstacle_confirm,
+            "shift-r": self._obstacle_reject,
+            "shift-v": self._obstacle_visual_mode,
+            "shift-tab": self._obstacle_select,
+            "shift-x": self._obstacle_delete,
+            "shift-d": self._obstacle_clear,
+            "shift-p": self._obstacle_save,
+            "shift-0": self._obstacle_load,
+            "shift-h": self._obstacle_kind,
+            "shift-m": self._obstacle_mask,
+        }
+        for key, fn in keys.items():
+            self.base.accept(key, fn)
+        for key, dx, dy, size in (("shift-arrow_left", -.005, 0, 0),
+                                   ("shift-arrow_right", .005, 0, 0),
+                                   ("shift-arrow_up", 0, .005, 0),
+                                   ("shift-arrow_down", 0, -.005, 0),
+                                   ("shift-=", 0, 0, .005),
+                                   ("shift--", 0, 0, -.005)):
+            self.base.accept(key, self._obstacle_edit, [dx, dy, size])
+        print("[obstacle] Shift+B empty baseline, Shift+A auto, Shift+S scan; "
+              "Shift+C confirm candidate, Shift+R reject, Shift+Tab select; "
+              "Shift+V overlay/highlight, Shift+H type, Shift+arrows move, "
+              "Shift+/- size, Shift+X delete, Shift+D clear, Shift+P save, "
+              "Shift+0 reload, Shift+M mask permanent feature", file=sys.stderr)
+
+    def _obstacle_ready(self):
+        if (self.table is None or self.table["cam"] is None or
+                self.table["tracker"].state not in ("LOCKED", "APPROX")):
+            print("[obstacle] camera and active table anchor required", file=sys.stderr)
+            return False
+        if self.args.provider != "viture":
+            print("[obstacle] physical capture requires VITURE camera", file=sys.stderr)
+            return False
+        return True
+
+    def _obstacle_baseline(self):
+        if self._obstacle_ready():
+            self.obstacles.command("capture")
+            print("[obstacle] capturing empty physical surface (7 good views); "
+                  "existing objects become part of baseline", file=sys.stderr)
+
+    def _obstacle_auto(self):
+        self.obstacle_auto = not self.obstacle_auto
+        self.obstacles.command("auto", self.obstacle_auto)
+        print(f"[obstacle] automatic detection {self.obstacle_auto}", file=sys.stderr)
+
+    def _obstacle_scan(self):
+        self.obstacle_scan = not self.obstacle_scan
+        self.obstacles.command("scan", self.obstacle_scan)
+        print(f"[obstacle] manual scan {self.obstacle_scan}", file=sys.stderr)
+        if self.obstacle_scan and self.obstacles.baseline is None:
+            print("[obstacle] no empty-table baseline yet; Shift+B first", file=sys.stderr)
+
+    def _obstacle_select(self):
+        ids = sorted(set(self.obstacle_candidates) | set(self.obstacle_visuals.nodes))
+        if not ids:
+            return
+        at = ids.index(self.obstacle_selected) if self.obstacle_selected in ids else -1
+        self.obstacle_selected = ids[(at + 1) % len(ids)]
+        print(f"[obstacle] selected {self.obstacle_selected}", file=sys.stderr)
+
+    def _obstacle_confirm(self):
+        if self.obstacle_selected in self.obstacle_candidates:
+            self.obstacles.command("confirm", self.obstacle_selected)
+        else:
+            print("[obstacle] select a stable candidate with Shift+Tab", file=sys.stderr)
+
+    def _obstacle_reject(self):
+        if self.obstacle_selected in self.obstacle_candidates:
+            self.obstacles.command("reject", self.obstacle_selected)
+            self.obstacle_candidates.pop(self.obstacle_selected, None)
+
+    def _obstacle_visual_mode(self):
+        print(f"[obstacle] visualization: {self.obstacle_visuals.toggle()}", file=sys.stderr)
+
+    def _obstacle_delete(self):
+        id = self.obstacle_selected
+        if id in self.obstacle_visuals.nodes:
+            self.obstacle_visuals.delete(id)
+            self.obstacles.command("remove", id)
+            print(f"[obstacle] removed {id}", file=sys.stderr)
+
+    def _obstacle_clear(self):
+        self.obstacle_visuals.clear()
+        self.obstacle_candidates.clear()
+        self.obstacles.command("clear")
+        self.obstacle_selected = None
+
+    def _obstacle_kind(self):
+        from dataclasses import replace
+        from obstacle_visuals import ASSETS
+        entry = self.obstacle_visuals.nodes.get(self.obstacle_selected)
+        if entry:
+            obj = entry[3]
+            types = list(ASSETS)
+            obj = replace(obj, kind=types[(types.index(obj.kind)+1) % len(types)])
+            self.obstacle_visuals.place(obj)
+            self.obstacles.command("edit", obj)
+            print(f"[obstacle] {obj.id}: {obj.kind}", file=sys.stderr)
+
+    def _obstacle_edit(self, dx, dy, ds):
+        from dataclasses import replace
+        entry = self.obstacle_visuals.nodes.get(self.obstacle_selected)
+        if entry:
+            obj = entry[3]
+            obj = replace(obj, x=obj.x+dx, y=obj.y+dy,
+                          width=max(.01, obj.width+ds),
+                          length=max(.01, obj.length+ds))
+            self.obstacle_visuals.place(obj)
+            self.obstacles.command("edit", obj)
+            print(f"[obstacle] {obj.id}: ({obj.x:.3f},{obj.y:.3f}) "
+                  f"{obj.width:.3f}x{obj.length:.3f}m", file=sys.stderr)
+
+    def _obstacle_mask(self):
+        entry = self.obstacle_visuals.nodes.get(self.obstacle_selected)
+        if entry:
+            obj = entry[3]
+            self.obstacles.command("mask", obj.x, obj.y, obj.width, obj.length)
+            self._obstacle_delete()
+            print("[obstacle] region masked as permanent; recapture baseline", file=sys.stderr)
+
+    def _obstacle_layout_key(self):
+        import hashlib
+        import json
+        t = self.table
+        data = (self.args.table_w, self.args.table_l, self.args.table_dict,
+                self.args.table_id, self.args.marker_size_mm,
+                t["intrinsics"], t["hand_eye"])
+        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+    def _obstacle_save(self):
+        import json
+        from dataclasses import asdict
+        try:
+            data = {"calibration": self._obstacle_layout_key(),
+                    "obstacles": [asdict(v[3]) for v in self.obstacle_visuals.nodes.values()]}
+            with open(self.args.obstacle_layout, "w") as f:
+                json.dump(data, f, indent=2)
+            print(f"[obstacle] saved {self.args.obstacle_layout}", file=sys.stderr)
+        except OSError as exc:
+            print(f"[obstacle] save failed: {exc}", file=sys.stderr)
+
+    def _obstacle_load(self):
+        import json
+        from physical_obstacles import Footprint
+        try:
+            with open(self.args.obstacle_layout) as f:
+                data = json.load(f)
+            if data["calibration"] != self._obstacle_layout_key():
+                print("[obstacle] layout calibration differs; not loading", file=sys.stderr)
+                return
+            loaded = [Footprint(**item) for item in data["obstacles"]]
+            self._obstacle_clear()
+            for obj in loaded:
+                self.obstacle_visuals.place(obj)
+                self.obstacles.command("restore", obj)
+            print(f"[obstacle] loaded {len(loaded)} obstacles", file=sys.stderr)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            print(f"[obstacle] load failed: {exc}", file=sys.stderr)
+
+    def _update_obstacles(self):
+        if self.obstacles is None:
+            return
+        for event in self.obstacles.drain():
+            action, data = event
+            if action == "add":
+                self.obstacle_visuals.place(data)
+                self.obstacle_selected = data.id
+                print(f"[obstacle] anchored {data.id}: ({data.x:.3f},{data.y:.3f}) "
+                      f"{data.width:.3f}x{data.length:.3f}m confidence={data.confidence:.2f} "
+                      "(plane-projection estimate)", file=sys.stderr)
+            elif action == "remove":
+                self.obstacle_visuals.delete(data.id)
+                print(f"[obstacle] removal observed: {data.id}", file=sys.stderr)
+            elif action == "baseline":
+                print(f"[obstacle] baseline captured; coverage {data:.0%}", file=sys.stderr)
+            elif action == "candidates":
+                for id, (obj, count) in data.items():
+                    if count >= self.obstacles.tracker.stable_frames and id not in self.obstacle_candidates:
+                        print(f"[obstacle] candidate {id}: ({obj.x:.3f},{obj.y:.3f}) "
+                              f"{obj.width:.3f}x{obj.length:.3f}m "
+                              f"confidence={obj.confidence:.2f}; Shift+Tab then Shift+C",
+                              file=sys.stderr)
+                self.obstacle_candidates = data
+                self.obstacle_visuals.show_candidates(data)
+            elif action == "error":
+                self.obstacle_error_count += 1
+                if self.obstacle_error_count <= 3:
+                    print(f"[obstacle] CV error: {data}", file=sys.stderr)
+            elif action == "latency" and data > 500:
+                print(f"[obstacle] processing {data}ms; frames dropped", file=sys.stderr)
+        t = self.table
+        if (not t or not t["cam"] or t["tracker"].state not in ("LOCKED", "APPROX")
+                or not t["scanning"] or time.monotonic() - self.obstacle_last_submit < .20):
+            return
+        fr = t["cam"].peek_frame()
+        if fr is None or fr[3] == self.obstacle_last_seq:
+            return
+        jpeg, w, h, seq, ts_ns, arrival = fr
+        self.obstacle_last_seq = seq
+        self.obstacle_last_submit = time.monotonic()
+        if time.monotonic() - arrival > .25:
+            return
+        stamp = t["timesync"].to_mono(ts_ns, arrival)
+        interp = t["history"].interpolate(stamp)
+        if interp is None or not interp[2] or (interp[3] and
+                abs(stamp - t["history"].snapshot()[-1][0]) > .08):
+            return
+        K, dist, _approx_intr = self._table_intrinsics_for(w, h)
+        he, _approx_he = self._table_hand_eye()
+        cam = __import__("tabletop").rigid_mul(interp[0], interp[1], *he)
+        anchor = t["tracker"].anchor
+        hand = bool(self._last_hands) and any(
+            abs(h.stamp - time.monotonic()) < .3 for h in self._last_hands)
+        self.obstacles.submit((jpeg, K, dist, cam, (anchor.pos, anchor.quat), stamp, hand))
+
+    def _world_size_m(self, node):
+        """Final world-space size from live scene-graph scales (not metadata)."""
+        dims = node.get_python_tag("dimensions_m")
+        if dims is None:
+            return None
+        net = float(node.get_scale()[0]) * float(self.golf_scale_root.get_scale()[0])
+        return tuple(float(d)*net for d in dims)
+
+    def _measure_course(self, exclude_ball=False):
+        """World-space course metrics from live scene-graph state.
+
+        Sizes use per-node live scales times the scale-root scale; the course
+        box also gets an independent cross-check from the golf-course tight
+        bounds (which include every descendant transform exactly once).
+        Values are exact (unrounded); callers round for display. Pass
+        exclude_ball=True to measure the scalable course shell without the
+        independently-compensated gameplay ball.
+        """
+        scale = float(self.golf_scale_root.get_scale()[0])
+        table = (float(self.args.table_w), float(self.args.table_l))
+        boxes = []
+        for node in self.golf_objects:
+            if exclude_ball and "cyber-ball" in node.get_name():
+                continue
+            dims = node.get_python_tag("dimensions_m")
+            if dims is None:
+                continue
+            s = float(node.get_scale()[0])*scale
+            p = node.get_pos(self.golf_course)
+            boxes.append(((p[0]*scale-dims[0]*s/2, p[0]*scale+dims[0]*s/2),
+                          (p[1]*scale-dims[1]*s/2, p[1]*scale+dims[1]*s/2),
+                          (p[2]*scale, p[2]*scale+dims[2]*s)))
+        course = (max(b[0][1] for b in boxes)-min(b[0][0] for b in boxes),
+                  max(b[1][1] for b in boxes)-min(b[1][0] for b in boxes),
+                  max(b[2][1] for b in boxes)-min(b[2][0] for b in boxes)) \
+            if boxes else ("?", "?", "?")
+        try:
+            lo, hi = self.golf_course.get_tight_bounds()
+            tight = ((hi[0]-lo[0])*scale,
+                     (hi[1]-lo[1])*scale,
+                     (hi[2]-lo[2])*scale) if lo is not None else ("?", "?", "?")
+        except Exception:
+            tight = ("?", "?", "?")
+        measured_layout = self.course_layout or self.golf_course.get_python_tag("layout")
+        lane = (float(measured_layout["fairway_width_m"])*scale
+                if measured_layout else "?")
+        balls = self.golf_course.find_all_matches("**/cyber-ball")
+        ball = "?"
+        if not balls.is_empty():
+            size = self._world_size_m(balls[0])
+            ball = max(size[0], size[1])
+        return {"course": course, "tight": tight, "lane": lane, "ball": ball,
+                "table": table, "scale": scale}
+
+    def _node_path(self, node):
+        names = []
+        while node is not None and not node.is_empty():
+            names.append(node.get_name())
+            node = node.get_parent()
+        return "/".join(reversed(names))
+
+    @staticmethod
+    def _r4(value):
+        return "?" if isinstance(value, str) else round(float(value), 4)
+
+    def _audit_scale(self, why):
+        """Phase-2 startup instrumentation: trace the real applied scale path."""
+        try:
+            import sys as _sys
+            from golf_specs import COURSE_SCALE
+            m = self._measure_course()
+            src = ("cli --course-scale" if "--course-scale" in _sys.argv
+                   else "src/golf_specs.py COURSE_SCALE default")
+            stage = self.golf_stage
+            root = self.golf_scale_root
+            rep = self.base.render
+            print(f"[scale-audit] {why}: effective_scale={m['scale']} source={src} "
+                  f"default={COURSE_SCALE}", file=_sys.stderr)
+            print(f"[scale-audit] roots: stage={self._node_path(stage)} "
+                  f"scale={stage.get_scale()[0]:.4f} | "
+                  f"scale-root={self._node_path(root)} "
+                  f"scale={root.get_scale()[0]:.4f} | "
+                  f"course={self._node_path(self.golf_course)} "
+                  f"scale={self.golf_course.get_scale()[0]:.4f} | "
+                  f"table-stage scale={self.table['stage'].get_scale()[0]:.4f} "
+                  f"(must stay 1.0)", file=_sys.stderr)
+            descendants = root.find_all_matches("**/*")
+            models = [n for n in self.golf_scale_root.find_all_matches("**/golf-*")
+                       if n.get_python_tag("dimensions_m") is not None]
+            print(f"[scale-audit] descendants_under_scale_root={descendants.get_num_paths()} "
+                  f"sized_models={len(models)}", file=_sys.stderr)
+            # Course-intended models outside the scale root: only the
+            # documented debug gallery may appear (physical obstacles live
+            # under table-stage, the table outline under table-root).
+            outside = []
+            for pat in ("**/cyber-*", "**/neon-*", "**/plasma-*"):
+                for n in rep.find_all_matches(pat):
+                    if n.get_python_tag("dimensions_m") is None:
+                        continue
+                    p = n.get_parent()
+                    under_scale, under_gallery = False, False
+                    while p is not None and not p.is_empty():
+                        if p == root:
+                            under_scale = True
+                            break
+                        if getattr(self, "gallery", None) is not None and \
+                                p == self.gallery.root:
+                            under_gallery = True
+                            break
+                        p = p.get_parent()
+                    if not under_scale and not under_gallery:
+                        outside.append(n)
+            print(f"[scale-audit] course_models_outside_scale_root={len(outside)}"
+                  + ("" if not outside else
+                     f" {[self._node_path(n) for n in outside[:8]]}"),
+                  file=_sys.stderr)
+            print(f"[scale-audit] world course={self._r4(m['course'][0])}x"
+                  f"{self._r4(m['course'][1])}x{self._r4(m['course'][2])}m tight="
+                  f"{self._r4(m['tight'][0])}x{self._r4(m['tight'][1])}x"
+                  f"{self._r4(m['tight'][2])}m lane={self._r4(m['lane'])}m ball="
+                  f"{self._r4(m['ball'])}m "
+                  f"(target {self.ball_diameter:.5f}m) "
+                  f"table={m['table'][0]:.3f}x{m['table'][1]:.3f}m",
+                  file=_sys.stderr)
+            # Collision finals: local solid x node scale x root scale.
+            for node in self.golf_course.find_all_matches("**/course-*"):
+                if not hasattr(node.node(), "get_num_solids"):
+                    continue
+                solids = node.node().get_num_solids()
+                for i in range(solids):
+                    solid = node.node().get_solid(i)
+                    try:
+                        from panda3d.core import CollisionSphere as _CS
+                        if isinstance(solid, _CS):
+                            world_d = (solid.get_radius()*2 *
+                                       float(node.get_parent().get_scale()[0]) *
+                                       float(root.get_scale()[0]))
+                            print(f"[scale-audit] collider {node.get_name()}: "
+                                  f"local_r={solid.get_radius():.4f}m "
+                                  f"world_d={world_d:.4f}m", file=_sys.stderr)
+                            break
+                    except Exception:
+                        pass
+        except Exception as exc:
+            import sys as _sys
+            print(f"[scale-audit] unavailable ({exc})", file=_sys.stderr)
+
+    def _log_course_dims(self, why):
+        try:
+            import sys as _sys
+            m = self._measure_course()
+            r = self._r4
+            print(f"[golf-dims] {why}: table={m['table'][0]:.3f}x{m['table'][1]:.3f}m "
+                  f"course={r(m['course'][0])}x{r(m['course'][1])}m tight="
+                  f"{r(m['tight'][0])}x{r(m['tight'][1])}m lane={r(m['lane'])}m "
+                  f"ball={r(m['ball'])}m "
+                  f"(target {self.ball_diameter:.5f}m) stage={m['scale']:.2f}",
+                  file=_sys.stderr)
+        except Exception as exc:
+            import sys as _sys
+            print(f"[golf-dims] unavailable ({exc})", file=_sys.stderr)
+
+    def _refresh_ball_comp(self):
+        # Ball geometry is authored at the selected physical diameter; only
+        # cancel course-scale-root so live course tuning cannot resize it.
+        comp = 1.0 / float(self.course_scale)
+        for ball in self.golf_course.find_all_matches("**/cyber-ball"):
+            ball.set_scale(comp)
+
     def _move_golf_stage(self, delta) -> None:
+        from golf_specs import (COURSE_SCALE_MAX, COURSE_SCALE_MIN,
+                                COURSE_SCALE)
         self.golf_offset = [a + b for a, b in zip(self.golf_offset, delta)]
-        self.golf_offset[4] = max(.3, min(1.5, self.golf_offset[4]))
+        self.golf_offset[4] = max(COURSE_SCALE_MIN,
+                                  min(COURSE_SCALE_MAX, self.golf_offset[4]))
         x, y, z, yaw, scale = self.golf_offset
+        self.course_scale = float(scale)
+        # Manual nudge stays on golf-stage-root; assembled-course scale
+        # lives ONLY on course-scale-root (never touched by generation).
         self.golf_stage.set_pos(x, y, z)
         self.golf_stage.set_h(yaw)
-        self.golf_stage.set_scale(scale)
+        self.golf_scale_root.set_scale(scale)
+        self._refresh_ball_comp()
         print(f"[golf] stage x={x:.2f} y={y:.2f} height={z:.2f} "
-              f"yaw={yaw:.0f} scale={scale:.2f}", file=sys.stderr)
+              f"yaw={yaw:.0f} scale={scale:.2f} (live range "
+              f"{COURSE_SCALE_MIN:.2f}-{COURSE_SCALE_MAX:.2f}, default "
+              f"{COURSE_SCALE:.2f}; Shift+9 resets; table anchor unchanged)",
+              file=sys.stderr)
+        if self.course_layout is not None:
+            import course_generator
+            valid, diag = course_generator.validate(self.course_layout,
+                                                    self.course_scale)
+            print(f"[golf] tuned final validation: valid={valid} {diag}",
+                  file=sys.stderr)
+        self._log_course_dims("tuned")
 
     def _reset_golf_stage(self) -> None:
-        self.golf_offset = [0, 0, 0, 0, 1]
+        from golf_specs import COURSE_SCALE
+        self.golf_offset = [0, 0, 0, 0, COURSE_SCALE]
+        self.course_scale = float(COURSE_SCALE)
         self.golf_stage.set_pos(0, 0, 0)
         self.golf_stage.set_h(0)
-        self.golf_stage.set_scale(1)
+        self.golf_scale_root.set_scale(COURSE_SCALE)
+        self._refresh_ball_comp()
+        self._log_course_dims("reset")
+
+    def run_scale_diagnostic(self) -> bool:
+        """Temporary Phase-3 diagnostic: scale the SAME assembled course by
+        relative 1.00/0.50/0.25 on course-scale-root without regenerating,
+        verify world-space halving numerically, then restore. Prints
+        [scale-diag] lines and returns True only if every proportion holds.
+        """
+        import sys as _sys
+        saved_stage = [float(v) for v in self.golf_stage.get_pos()] + \
+            [float(self.golf_stage.get_h())]
+        saved_scale = float(self.golf_scale_root.get_scale()[0])
+        saved_layout = self.course_layout
+
+        def snapshot(label):
+            m = self._measure_course()
+            shell = self._measure_course(exclude_ball=True)
+            sc = float(self.golf_scale_root.get_scale()[0])
+            start = hole = None
+            if self.course_layout is not None:
+                s = self.course_layout["start"]
+                h = self.course_layout["hole"]
+                start = (s[0]*sc, s[1]*sc)
+                hole = (h[0]*sc, h[1]*sc)
+            else:
+                balls = self.golf_course.find_all_matches("**/cyber-ball")
+                holes = self.golf_course.find_all_matches("**/cyber-target")
+                if not balls.is_empty() and not holes.is_empty():
+                    bp = balls[0].get_pos(self.golf_course)
+                    hp = holes[0].get_pos(self.golf_course)
+                    start = (bp[0]*sc, bp[1]*sc)
+                    hole = (hp[0]*sc, hp[1]*sc)
+            import math as _math
+            dist = (_math.hypot(hole[0]-start[0], hole[1]-start[1])
+                    if start is not None else None)
+            r = self._r4
+            print(f"[scale-diag] {label}: shell={r(shell['course'][0])}x"
+                  f"{r(shell['course'][1])}x{r(shell['course'][2])}m ball="
+                  f"{r(m['ball'])}m table={m['table'][0]:.3f}x"
+                  f"{m['table'][1]:.3f}m root_scale={m['scale']}"
+                  + ("" if dist is None else f" start_hole={dist:.5f}m"),
+                  file=_sys.stderr)
+            return m, shell, dist
+
+        ok = True
+
+        def check(cond, msg):
+            nonlocal ok
+            print(f"[scale-diag] {'PASS' if cond else 'FAIL'}: {msg}",
+                  file=_sys.stderr)
+            ok = ok and bool(cond)
+
+        try:
+            base, base_shell, base_dist = snapshot("baseline")
+            table_box = base["table"]
+            for rel in (1.00, 0.50, 0.25):
+                self.golf_scale_root.set_scale(saved_scale*rel)
+                self.course_scale = float(saved_scale*rel)
+                self._refresh_ball_comp()
+                m, shell, dist = snapshot(f"relative_{rel:.2f}")
+                for ax, name in enumerate(("width", "length", "height")):
+                    expected = base_shell["course"][ax]*rel
+                    check(abs(shell["course"][ax]-expected) < 1e-9,
+                          f"course shell {name} {shell['course'][ax]:.6f}m == "
+                          f"baseline {base_shell['course'][ax]:.6f}m x {rel} "
+                          f"(expected {expected:.6f}m)")
+                    # Tight bounds include independent-size ball seams,
+                    # hologram beacons and line thickness; proportional shell
+                    # bounds above are the authoritative scale assertion.
+                check(m["table"] == table_box,
+                      f"table unchanged {m['table']} (anchor not scaled)")
+                check(abs(float(m["ball"])-float(base["ball"])) < 1e-9,
+                      f"ball {m['ball']}m constant (compensated, not scaled)")
+                if dist is not None and base_dist is not None:
+                    check(abs(dist-base_dist*rel) < 1e-9,
+                          f"start-hole distance {dist:.6f}m scales by {rel}")
+            # One generated layout, same treatment: build once, scale only.
+            import course_generator
+            layout = course_generator.generate(
+                12345, self.args.table_w, self.args.table_l, "hard",
+                self.args.course_margin, self.args.course_decor,
+                saved_scale)
+            self._course_swap(layout)
+            design = float(self.golf_scale_root.get_scale()[0])
+            gbase, gbase_shell, gbase_dist = snapshot("generated-hard baseline")
+            for rel in (0.50, 0.25):
+                self.golf_scale_root.set_scale(design*rel)
+                self.course_scale = float(design*rel)
+                self._refresh_ball_comp()
+                m, shell, dist = snapshot(f"generated-hard relative_{rel:.2f}")
+                for ax, name in enumerate(("width", "length", "height")):
+                    check(abs(shell["course"][ax]-gbase_shell["course"][ax]*rel) < 1e-9,
+                          f"generated course shell {name} scales by {rel}")
+                check(abs(float(m["ball"])-float(gbase["ball"])) < 1e-9,
+                      "generated ball constant under scaling")
+                if dist is not None and gbase_dist is not None:
+                    check(abs(dist-gbase_dist*rel) < 1e-9,
+                          f"generated start-hole distance scales by {rel}")
+            return ok
+        finally:
+            self.golf_stage.set_pos(*saved_stage[:3])
+            self.golf_stage.set_h(saved_stage[3])
+            self.golf_scale_root.set_scale(saved_scale)
+            self.course_scale = float(saved_scale)
+            try:
+                self._course_swap(saved_layout)
+            except Exception as exc:
+                print(f"[scale-diag] restore failed: {exc}", file=_sys.stderr)
+                ok = False
+            self.golf_scale_root.set_scale(saved_scale)
+            self.course_scale = float(saved_scale)
+            self.golf_offset[4] = float(saved_scale)
+            self._refresh_ball_comp()
+            snapshot("restored")
+        return ok
 
     def _apply_table_adjust(self) -> None:
         t = self.table
@@ -922,6 +1882,9 @@ class VitureARApp:
             print(f"[table] hand-eye solve failed: {exc}", file=sys.stderr)
             return
         t["hand_eye"] = (pos, quat)
+        if getattr(self, "obstacles", None) is not None:
+            self.obstacles.command("invalidate")
+            print("[obstacle] calibration changed; recapture baseline", file=sys.stderr)
         print(f"[table] hand-eye solved: {diag['motions']} motions, "
               f"rot resid {diag['rot_resid_deg_mean']:.3f}deg, "
               f"trans resid {diag['trans_resid_m_mean'] * 1000:.1f}mm; "
@@ -980,6 +1943,8 @@ class VitureARApp:
         tr.anchor = anchor
         tr.state = "DEGRADED"
         tr.anchor.tracking_state = "DEGRADED"
+        if getattr(self, "obstacles", None) is not None:
+            self.obstacles.command("invalidate")
         print(f"[table] anchor restored (DEGRADED, conf={anchor.confidence:.2f}); "
               "show the marker to snap in", file=sys.stderr)
 
@@ -1100,8 +2065,8 @@ class VitureARApp:
         approx = approx or is_approx
         cal = t["calibrator"]
         status, _anchor = cal.observe(head_pos, head_quat, best["rvec"],
-                                      best["tvec"], best["reproj_err"],
-                                      t_img, he, approx_ok=not approx)
+                                       best["tvec"], best["reproj_err"],
+                                       t_img, he, approx_ok=approx)
         if status == "accepted":
             st["acc"] += 1
         else:
@@ -1309,6 +2274,9 @@ class VitureARApp:
                       file=sys.stderr)
 
     def _shutdown(self) -> None:
+        if getattr(self, "obstacles", None) is not None:
+            self.obstacles.stop()
+            self.obstacles = None
         if getattr(self, "table", None) is not None:
             try:
                 self.table["detector"].stop()
@@ -1410,6 +2378,15 @@ class VitureARApp:
 
         dt = self.base.clock.getDt()
         self._fit_lens()
+        # Lightweight material pulse only; no particles, mesh rebuilds or
+        # allocations in the pose-to-render path.
+        course = getattr(self, "golf_course", None)
+        if course is not None and not course.is_empty() and \
+                getattr(self, "neon_enabled", True):
+            pulse = .86 + .14 * math.sin(task.time * 2.6)
+            for node in course.get_python_tag("animated_neon") or ():
+                if not node.is_empty():
+                    node.set_color_scale(pulse, pulse, pulse, 1)
 
         # Compositor placement (runtime only, retried a few times).
         if (not self._placed and self.frames > 0 and self.frames % 300 == 0
@@ -1457,6 +2434,7 @@ class VitureARApp:
         if self.table is not None:
             try:
                 self._update_table(snap)
+                self._update_obstacles()
             except Exception:
                 import traceback
 
@@ -1517,6 +2495,10 @@ class VitureARApp:
                       file=sys.stderr)
         if self.frames % 10 == 0:
             self._refresh_debug(snap)
+        if self.args.graphics_debug and self.frames and self.frames % 300 == 0:
+            fps = self.base.clock.get_average_frame_rate()
+            print(f"[graphics] fps={fps:.1f} frame_ms={1000/max(.001, fps):.2f}",
+                  file=sys.stderr)
         return Task.cont
 
     def _refresh_debug(self, snap) -> None:
@@ -1544,6 +2526,20 @@ class VitureARApp:
             f"frames: {self.frames}",
             f"fade: {'off' if not self.fade.enabled else f'w{self.fade.width:.2f} s{self.fade.strength:.1f}'}",
         ]
+        course = getattr(self, "course_layout", None)
+        if course:
+            fb = self.base.win.get_fb_properties() if self.base.win else None
+            lines.extend([
+                f"golf: {course['difficulty']} seed {course['seed']} ball {self.ball_diameter*100:.1f}cm",
+                f"fairway {course['fairway_width_m']*course['course_scale']*100:.1f}cm "
+                f"terrain {course['terrain']['width_m']*course['course_scale']:.2f}x"
+                f"{course['terrain']['length_m']*course['course_scale']:.2f}m",
+                f"mesh {course['terrain']['grid_size']}² / "
+                f"{2*(course['terrain']['grid_size']-1)**2} tris; "
+                f"MSAA {fb.get_multisamples() if fb else 0}x",
+                f"gfx {self.args.quality} shader {'per-pixel' if self.graphics['shader'] else 'fixed'} "
+                f"bloom {'on' if getattr(self, 'bloom_enabled', False) else 'off'}",
+            ])
         lines.extend(self._hand_debug_lines())
         if self.table is not None:
             lines.extend(self._table_debug_lines())
@@ -1579,8 +2575,34 @@ class VitureARApp:
         """Required startup audit: framebuffer, lens, regions, display."""
         win = self.base.win
         if win is not None:
-            print(f"[diag] framebuffer: {win.get_x_size()}x{win.get_y_size()}",
-                  file=sys.stderr)
+            fb = win.get_fb_properties()
+            gsg = win.get_gsg()
+            renderer = gsg.get_driver_renderer() if gsg else "unknown"
+            print(f"[diag] framebuffer: {win.get_x_size()}x{win.get_y_size()} "
+                  f"requested_msaa={self.graphics['msaa']} actual_msaa={fb.get_multisamples()} "
+                  f"multisample={'on' if fb.get_multisamples() else 'off'} "
+                  f"rgb={fb.get_color_bits()} depth={fb.get_depth_bits()} "
+                  f"srgb={bool(fb.get_srgb_color())} backend={renderer}", file=sys.stderr)
+            if self.args.graphics_debug:
+                print(f"[graphics] preset={self.args.quality} "
+                      f"shader={'auto/per-pixel' if self.graphics['shader'] else 'fixed-function'} "
+                      f"filter=trilinear/{self.graphics['anisotropy']}x "
+                      f"bloom={'on' if getattr(self, 'bloom_enabled', False) else 'off'}",
+                      file=sys.stderr)
+                layout = getattr(self, "course_layout", None)
+                if layout:
+                    n = layout['terrain']['grid_size']
+                    geom_nodes = self.golf_course.find_all_matches("**/+GeomNode")
+                    geoms = sum(node.node().get_num_geoms() for node in geom_nodes)
+                    textures = self.golf_course.find_all_textures().get_num_textures()
+                    print(f"[graphics] ball={self.ball_diameter:.4f}m "
+                          f"fairway={layout['fairway_width_m']*layout['course_scale']:.4f}m "
+                          f"terrain={layout['terrain']['width_m']*layout['course_scale']:.3f}x"
+                          f"{layout['terrain']['length_m']*layout['course_scale']:.3f}m "
+                          f"mesh={n}x{n} vertices={n*n} terrain_triangles={2*(n-1)**2} "
+                          f"geom_nodes={geom_nodes.get_num_paths()} geoms={geoms} "
+                          f"textures={textures}",
+                          file=sys.stderr)
         print(f"[diag] lens: hfov={self.lens.get_hfov():.2f} "
               f"vfov={self.lens.get_vfov():.2f} "
               f"aspect={self.lens.get_aspect_ratio():.4f} "
@@ -1653,6 +2675,8 @@ def main(argv=None) -> int:
         print("Stereo needs a window; smoke runs are mono.", file=sys.stderr)
         return 2
     app = VitureARApp(args)
+    if args.scale_diagnostic:
+        return 0 if app.run_scale_diagnostic() else 1
     return 0 if app.run() else 1
 
 

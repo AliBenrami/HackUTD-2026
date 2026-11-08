@@ -13,10 +13,53 @@ import os
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
 import pose_math
+
+
+class ApproxGateIntegrationTests(unittest.TestCase):
+    def test_detection_uses_relaxed_calibrator_gate_only_when_approximate(self):
+        from ar_poc import VitureARApp
+
+        class Calibrator:
+            def __init__(self):
+                self.approx_ok = None
+
+            def observe(self, *args, approx_ok):
+                self.approx_ok = approx_ok
+                return "accepted", None
+
+            def collect_handeye(self, *args):
+                return False
+
+            def best_estimate(self):
+                return None
+
+        cal = Calibrator()
+        t = {"stats": {"det": 0, "acc": 0, "stale": 0, "amb": 0,
+                       "rej": {}, "last_err": 0},
+             "timesync": SimpleNamespace(to_mono=lambda *_: 5.),
+             "history": SimpleNamespace(interpolate=lambda *_: (
+                 (0., 0., 0.), (1., 0., 0., 0.), True, False)),
+             "calibrator": cal}
+        app = SimpleNamespace(table=t, args=SimpleNamespace(marker_size_mm=100.))
+        det = {"arrival_mono": 5., "ts_ns": 0, "img_w": 300,
+               "img_h": 200, "corners": []}
+        solution = [{"rvec": (0, 0, 0), "tvec": (0, 0, 1),
+                     "reproj_err": .2}]
+        with patch("tabletop.estimate_marker_pose", return_value=solution):
+            for extrinsic_approx, intrinsics_approx in (
+                    (True, False), (False, True), (False, False)):
+                app._table_intrinsics_for = lambda *_: (None, None, intrinsics_approx)
+                app._table_hand_eye = lambda: (((0, 0, 0), (1, 0, 0, 0)),
+                                               extrinsic_approx)
+                VitureARApp._table_on_detection(app, det, None, 5.1)
+                self.assertEqual(cal.approx_ok,
+                                 extrinsic_approx or intrinsics_approx)
 from tabletop import (
     ADJUST_ANG_DEG,
     ADJUST_POS_M,

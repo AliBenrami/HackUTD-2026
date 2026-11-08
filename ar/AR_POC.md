@@ -1,11 +1,121 @@
 # AR PoC — native optical AR on VITURE Luma Ultra
 
-Single Python + Panda3D application that renders world-locked wireframe
-geometry on the VITURE Luma Ultra's physical display, anchored by the
-onboard Carina 6DoF head pose. No virtual monitors, no desktop capture,
+Single Python + Panda3D application that renders marker-anchored miniature
+golf (or calibration wireframes) on the VITURE Luma Ultra's physical display.
+The Carina 6DoF head pose moves the camera. No virtual monitors or desktop capture,
 no video passthrough in the default path: one fullscreen window on the
 glasses output, pure-black clear (invisible on the additive combiner),
 only virtual geometry emits light.
+
+## Continuous Neon Cyber Golf terrain
+
+The default scene is a seeded floating industrial island, not modular course
+tiles. `src/course_generator.py` creates start/end areas and 2–4 intermediate
+controls, then uses three Chaikin passes for a smooth, overshoot-free route. A
+low-frequency domain-warped macro field (3 octaves) plus one broad angled
+seeded ridge forms the base relief; a corner mesa and an opposite basin add
+two deliberate silhouettes. Blend is flat in the corridor core and cubic into
+the noisier field; start and target pads flatten. Route endpoints inset to
+±38% of the terrain width so widened landing pads stay inside the diorama.
+
+At the default table size the island uses 54×34 cm. Rendering, height/slope
+queries, validation and the static Bullet collision mesh use the same function
+and vertices (the fairway ribbon samples exact rendered-triangle height with
+a 1.2 mm offset, edges +2.0 mm, marks +1.4 mm; 9 cross-sections). Terrain mesh
+normals are smooth, shared and normalized; the beveled sidewall has corrected
+outward winding plus a cyan perimeter trim. A dark-teal fairway ribbon and
+lime dashes mark the route; dark-rimmed irregular plasma pools with bright halo
+rings represent hazards. Procedural sphere (22 mm default, 20–43 mm
+configurable), target rings, barriers and crystals replace prior golf-specific
+models. Sparse city props (18–34 mm, `max` sizing, ≥ fairway×0.85 clearance,
+upright street-facing) come from the external reodesuxz pack. The
+cyberpunk-only manifest has no traditional-asset fallback.
+
+Difficulty changes geometry: Easy has two gentle controls, a 12.0 cm
+fairway, low relief and no blockers; Medium has three controls, a 9.0 cm
+corridor, moderate relief and partial direct-line barriers; Hard has four
+controls, a 6.5 cm corridor, stronger elevation, direct barriers and three
+plasma areas. Validation checks table bounds, ball-radius clearance, finite
+terrain, route-center slopes, object footprints and direct-line interference.
+100/100 seeds per difficulty pass at 60×40 cm (Nov 2026 desktop run, zero
+rejections). This is geometric evidence, not proof of stroke-level playability.
+
+Scale ownership remains `table-stage → golf-stage-root` (position/yaw) `→
+course-scale-root` (only scale owner) `→ golf-course`. Terrain is authored as
+final metres divided by design scale; the 22 mm ball alone compensates by
+1/scale. Atomic regeneration removes the old visual and Bullet subtree without
+touching tracking, anchor, camera, or physical obstacles. Physical overlays
+query terrain height while preserving measured table-local XY.
+
+Materials and light: `src/cyber_theme.py` centralizes the sRGB-authored
+palette (converted to linear exactly once for the sRGB framebuffer),
+per-pixel ambient/key/fill lights with shader-auto, and reusable
+metallic/emissive materials. Vertex-coloured terrain/ribbon carry no
+MaterialAttrib so vertex colours drive lighting without double tint;
+neon geometry uses flat node colour with lights off. Imported glTF colours
+stay untouched except emission ×0.8 and a roughness/metallic lift for
+non-emissive props. Texture filtering is linear-mag, trilinear-mip-min,
+about 8× anisotropic.
+
+Controls: Alt+1/2/3 difficulty, Alt+G random, Alt+R current seed, Alt+Z
+previous, Alt+F cyber style proof, Alt+S/L save/load, Alt+T seed entry, Alt+V
+route debug, Alt+N neon, and Alt+B optional desktop bloom (Quality preset
+enables it; Balanced keeps it off). Presets are
+Performance (65², fixed-function, no sRGB, MSAA 2 requested) /
+Balanced, the default (97², per-pixel, sRGB, MSAA 4 requested) /
+Quality (129², per-pixel, sRGB, MSAA 8 requested, bloom on); this AMD driver
+reports actual MSAA 8 in every mode with 24-bit RGB/depth. Bloom is
+`--bloom-threshold 0.70 --bloom-intensity 0.55 --bloom-size small` with blend
+`(.30,.40,.30,0.0)`; bloom buffers report MSAA 4/8 so AA survives the
+compositor. Pure-black clear remains intact; bloom is unnecessary for
+readability and stays disabled for stereo. `--graphics-debug` logs
+framebuffer/MSAA, mesh/geom/texture counts, preset/shader/filter/bloom and
+FPS (about 120 FPS Balanced/Quality here).
+
+## Physical-object obstacles (experimental)
+
+`src/physical_obstacles.py` receives latest-only JPEGs from the existing
+`CameraStream`, the existing `TimeSync`/`PoseHistory` pose at frame time, the
+current table anchor and camera-to-head transform. A worker undistorts each
+RGB frame and homography-warps the known table plane to a 500 px/m canonical
+image (configurable). Views over 40 degrees from overhead or with under 65%
+coverage are rejected. Seven good empty-table views form an in-memory median
+reference (no automatic background adaptation). The central 14 cm around the
+default marker is masked; Shift+M masks another selected permanent feature.
+Lighting-normalized Lab colour differences, shadow suppression, morphology and
+connected contours yield approximate tabletop-plane footprints. Five matched
+observations confirm an object; eight fully visible, baseline-matching empty
+observations remove it. Offscreen regions do not count toward removal. Camera
+work runs in a latest-only worker; submissions are capped at 5 Hz. A recognized
+hand from the existing *optional* MediaPipe hand tracker suppresses the whole
+frame; without that tracker, temporal stability is the only hand filter.
+
+`src/obstacle_visuals.py` attaches stable table-local nodes under `table-stage`
+(siblings of the independently nudged golf stage), loading cyberpunk crates,
+generators, holograms or barriers on demand. Colliders are simple static Panda3D
+`CollisionSphere`/`CollisionBox` proxies on solid mask bit 1 or water hazard
+bit 2; no ball dynamics are provided. Shift+V switches between a bright
+footprint ring and a full model. There is no real-world occlusion. Default
+visual/collider height is an **unmeasured** 5.5 cm. Layout save/reload is
+explicit and bound to table configuration and saved calibration, not portable.
+The session-only reference is invalidated when hand-eye or anchor is restored.
+
+For a live test: establish a LOCKED/APPROX marker anchor and clear the real
+course, Shift+B, wait for `[obstacle] baseline captured`, place an object,
+remove the hand, walk around and verify it stays table-locked. Repeat with a
+second object, then remove one and observe hysteretic removal (Shift+X if
+uncertain). Shift+A toggles automatic mode; Shift+S collects manual candidates
+even when auto is off. `--obstacle-debug` displays RGB, top-down image,
+reference, mask and candidate/accepted overlays on the laptop only. Enable
+`--hands mediapipe --manipulate` for the optional hand suppression path.
+
+**Not hardware-verified.** Projection uses approximate intrinsics and a
+camera-to-head flip unless machine-local calibration exists. Plane homography
+misplaces tall objects and cannot recover contact geometry or metric height;
+false positives from hands/shadows and false negatives for low-contrast or
+marker-adjacent objects remain possible. No measured detection or placement
+error is available; calibrate and validate through the glasses before claiming
+alignment. Stereo depth/segmentation and ball physics are deferred.
 
 ## Architecture
 
@@ -15,7 +125,7 @@ VITURE Luma Ultra
                                         (background poll thread, 120 Hz,
                                          immutable snapshots + lock)
   DP  -> Hyprland output DP-1 -> fullscreen Panda3D window
-                                   persist world (cube/octa/pyramid)
+                                    persistent table / golf scene
                                    per-frame: pose -> look_at camera
 ```
 
@@ -56,15 +166,12 @@ the panel FOV simply wait until you look at them.
 nix develop
 uv sync
 
-# one-time USB permissions, then replug the glasses:
-sudo cp etc/70-viture.rules /etc/udev/rules.d/70-viture.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
+# NixOS: configure services.udev.extraRules, rebuild and replug.
+# See HANDOFF.md for this machine's pending rebuild failure.
 ```
 
-Immutable rootfs (this machine): `/etc` is read-only, so per session,
-as root: `chmod 666 /dev/bus/usb/<bus>/<dev>` for the `35ca:1104`
-glasses and `0c45:636b` camera nodes (re-enumeration changes devnums;
-re-apply after replug). The proprietary SDK is resolved from
+The checked-in `etc/70-viture.rules` is a reference for mutable systems;
+NixOS uses `/etc/nixos/viture.nix` instead. The proprietary SDK is resolved from
 `$VITURE_SDK_LIB`, defaulting to the reference checkout's unpacked
 blobs (never vendored).
 
@@ -298,7 +405,7 @@ fallback), **H** hand tracker on/off. Desktop sim: mouse = pointer,
   confidence, `hover` state, pointer indicator). Confirming a full
   grab-move-release with your own hand is the remaining live step.
 
-## Tabletop AR (--table to enable)
+## Tabletop AR (automatic for golf/gallery; `--table` for calibration scene)
 
 Virtual objects sit on the real physical table and stay put while you
 move. A printed ArUco marker (default DICT_6X6_250 id 42, 100 mm)
@@ -333,16 +440,12 @@ assumes the viture provider).
 `scripts/make_table_target.py` prints the marker at exact millimetre
 size (+ JSON sidecar) and a checkerboard for intrinsics calibration.
 
-Measured (synthetic + live, 2026-11-07):
+Verification history and current status (see [HANDOFF.md](HANDOFF.md) for
+the current handoff and live acceptance steps):
 
-* 76 unit tests pass (`PYTHONPATH=src uv run python -m unittest
-  discover -s tests`): IPPE exact/noisy recovery, corner-order
-  validation, hand-eye synthetic recovery (0.0 deg / 0.0 mm, exact
-  data), degenerate-motion rejection, gravity/distance/gating,
-  acquisition lock, no-jump/snap/relock, origin-reset carry,
-  jump-detector LOST, DEGRADED/LOST timeouts, TimeSync, pose
-  interpolation incl. slerp, contact heights, plane bounds, cal-file
-  roundtrip, detector on synthetic frames.
+* 84 tests passed at the latest handoff (`PYTHONPATH=src uv run python -m
+  unittest discover -s tests`), covering pose conversion, hand input,
+  anchor/calibrator/detector behavior and real downloaded golf assets.
 * Live: glasses camera streams 1920x1080@30 MJPEG; **device
   timestamps are always 0 in this SDK build**, so TimeSync runs on the
   arrival-time fallback path by design (verified working). Detector
@@ -352,11 +455,11 @@ Measured (synthetic + live, 2026-11-07):
   run render cleanly for thousands of frames. Full `--table` app on
   the glasses (DP-1, 6DoF locked, camera + detector + tracker live):
   healthy, anchor correctly UNINITIALIZED with no marker in view.
-* NOT yet live-verified: marker scan -> APPROX lock, hand-eye solve on
-  real data, object stability while walking, save/restore across
-  sessions. Blocked on physics: the glasses lie facing across the
-  desk, and the marker must be placed in their view (or the glasses
-  picked up) -- needs hands.
+* A later user run **did** acquire an APPROX anchor and reported much
+  better table behavior after state-machine repairs. It also exposed
+  `reject-inconsistent` floods and DEGRADED recovery gaps that were then
+  addressed in code. This is not a measurement of tabletop accuracy, and
+  there has been **no live walk-around acceptance for the new golf scene**.
 
 Acceptance (needs printed marker + glasses free):
 
