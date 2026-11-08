@@ -1,0 +1,16 @@
+[project]
+name = "viture-luma-ultra-ar-poc"
+version = "0.1.0"
+description = "PoC optical see-through AR overlay for VITURE Luma Ultra (Python + Panda3D)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "panda3d>=1.10.14",
+    "pillow>=10",
+    "mediapipe>=1.2",
+    "numpy>=1.26",
+    "panda3d-gltf>=1.3.0",
+]
+
+[tool.uv]
+managed = true

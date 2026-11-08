@@ -1,0 +1,9 @@
+{
+  "mode": "aruco",
+  "dict": "DICT_6X6_250",
+  "marker_id": 42,
+  "marker_size_m": 0.1,
+  "marker_size_mm": 100.0,
+  "dpi": 300.0,
+  "png": "table_target.png"
+}

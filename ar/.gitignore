@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+result
+direnv/
+sdk/
+# Machine-local downloaded model, calibration and generated cache.
+/models/
+table_calib.json
+assets/.golf-cache/
