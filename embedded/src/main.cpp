@@ -6,6 +6,7 @@
 #include <BLEUtils.h>
 #include <Wire.h>
 #include <driver/gpio.h>
+#include <math.h>
 #include <string.h>
 
 #include "protocol.h"
@@ -30,7 +31,7 @@ constexpr int kPressurePin = 5;
 constexpr int kBuzzerPin = 18;
 constexpr uint8_t kMpuAddress = 0x68;
 constexpr uint32_t kI2cHz = 100000;
-constexpr uint32_t kSamplePeriodMs = 20;  // 50 Hz over BLE
+constexpr uint32_t kSamplePeriodMs = 5;  // 200 Hz, fast enough for a swing
 constexpr uint32_t kLogPeriodMs = 1000;
 constexpr uint32_t kDisplayPeriodMs = 400;
 
@@ -46,10 +47,10 @@ constexpr uint8_t kRegAccelXOutH = 0x3B;
 constexpr uint8_t kRegPwrMgmt1 = 0x6B;
 constexpr uint8_t kRegWhoAmI = 0x75;
 
-constexpr float kAccelLsbPerG = 16384.0f;
-constexpr float kGyroLsbPerDps = 131.0f;
+constexpr float kAccelLsbPerG = 2048.0f;  // ±16 g
+constexpr float kGyroLsbPerDps = 16.4f;   // ±2000 deg/s
 constexpr size_t kTxCapacity = 256;
-constexpr size_t kImuPayloadLen = 16;
+constexpr size_t kImuPayloadLen = 22;
 
 enum class ImuKind : uint8_t { Mpu6050 = 1, Mpu6500 = 2 };
 
@@ -162,10 +163,10 @@ bool beginMpu() {
     return false;
   }
 
-  writeReg(kRegSampleRate, 19);  // 50 Hz when the gyro output rate is 1 kHz
-  writeReg(kRegConfig, 0x03);
-  writeReg(kRegGyroConfig, 0x00);
-  writeReg(kRegAccelConfig, 0x00);
+  writeReg(kRegSampleRate, 4);  // 200 Hz from the 1 kHz gyro clock
+  writeReg(kRegConfig, 0x01);
+  writeReg(kRegGyroConfig, 0x18);   // ±2000 deg/s
+  writeReg(kRegAccelConfig, 0x18);  // ±16 g
   return true;
 }
 
@@ -185,6 +186,118 @@ bool readImu(ImuSample *sample) {
   sample->gz = readBe16(raw + 12) / kGyroLsbPerDps;
   sample->kind = imuKind;
   return true;
+}
+
+struct Quat {
+  float w;
+  float x;
+  float y;
+  float z;
+};
+
+Quat pose = {1, 0, 0, 0};
+Quat addressPose = {1, 0, 0, 0};
+float clubPitch = 0;
+float clubRoll = 0;
+float clubYaw = 0;
+uint32_t lastPoseMs = 0;
+uint32_t stillSinceMs = 0;
+bool holdingStill = false;
+
+Quat quatMul(Quat a, Quat b) {
+  return {
+      a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+      a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+      a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+      a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+  };
+}
+
+void normalizeQuat(Quat &v) {
+  const float n = sqrtf(v.w * v.w + v.x * v.x + v.y * v.y + v.z * v.z);
+  if (n < 1e-6f) {
+    v = {1, 0, 0, 0};
+    return;
+  }
+  v.w /= n;
+  v.x /= n;
+  v.y /= n;
+  v.z /= n;
+}
+
+void eulerDegrees(Quat v, float &pitch, float &roll, float &yaw) {
+  float sinPitch = 2.0f * (v.w * v.y - v.z * v.x);
+  if (sinPitch > 1.0f) {
+    sinPitch = 1.0f;
+  } else if (sinPitch < -1.0f) {
+    sinPitch = -1.0f;
+  }
+  constexpr float kRadToDeg = 57.2957795f;
+  pitch = asinf(sinPitch) * kRadToDeg;
+  roll = atan2f(2.0f * (v.w * v.x + v.y * v.z),
+                1.0f - 2.0f * (v.x * v.x + v.y * v.y)) *
+         kRadToDeg;
+  yaw = atan2f(2.0f * (v.w * v.z + v.x * v.y),
+               1.0f - 2.0f * (v.y * v.y + v.z * v.z)) *
+        kRadToDeg;
+}
+
+// Pitch, roll, and yaw in degrees from the pose where the club was held still.
+// Gravity corrects tilt only while the head is quiet. During the swing the
+// gyro carries the angle, because the swing's acceleration swamps gravity.
+void updateClubAngle(const ImuSample &sample, uint32_t now) {
+  float dt = 0.005f;
+  if (lastPoseMs != 0 && now > lastPoseMs) {
+    dt = (now - lastPoseMs) / 1000.0f;
+  }
+  lastPoseMs = now;
+  if (dt < 0.001f) {
+    dt = 0.001f;
+  } else if (dt > 0.05f) {
+    dt = 0.05f;
+  }
+
+  constexpr float kDegToRad = 0.01745329252f;
+  float wx = sample.gx * kDegToRad;
+  float wy = sample.gy * kDegToRad;
+  float wz = sample.gz * kDegToRad;
+  const float amag = sqrtf(sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az);
+  const float gmag = sqrtf(sample.gx * sample.gx + sample.gy * sample.gy + sample.gz * sample.gz);
+  const bool quiet = amag > 0.85f && amag < 1.15f;
+  if (quiet) {
+    const float inv = 1.0f / amag;
+    const float axn = sample.ax * inv;
+    const float ayn = sample.ay * inv;
+    const float azn = sample.az * inv;
+    const float vx = 2.0f * (pose.x * pose.z - pose.w * pose.y);
+    const float vy = 2.0f * (pose.w * pose.x + pose.y * pose.z);
+    const float vz = pose.w * pose.w - pose.x * pose.x - pose.y * pose.y + pose.z * pose.z;
+    const float ex = ayn * vz - azn * vy;
+    const float ey = azn * vx - axn * vz;
+    const float ez = axn * vy - ayn * vx;
+    constexpr float kTiltGain = 2.0f;
+    wx += kTiltGain * ex;
+    wy += kTiltGain * ey;
+    wz += kTiltGain * ez;
+  }
+
+  pose = quatMul(pose, {1.0f, wx * dt * 0.5f, wy * dt * 0.5f, wz * dt * 0.5f});
+  normalizeQuat(pose);
+
+  if (quiet && gmag < 15.0f) {
+    if (!holdingStill) {
+      holdingStill = true;
+      stillSinceMs = now;
+    } else if (now - stillSinceMs >= 400) {
+      addressPose = pose;
+    }
+  } else {
+    holdingStill = false;
+  }
+
+  const Quat fromAddress = quatMul(
+      {addressPose.w, -addressPose.x, -addressPose.y, -addressPose.z}, pose);
+  eulerDegrees(fromAddress, clubPitch, clubRoll, clubYaw);
 }
 
 // Any future sensor calls this with its own id and payload.
@@ -234,6 +347,9 @@ void publishImu(const ImuSample &sample) {
   writeI16(payload + 12, clampI16(sample.tempC * 100.0f));
   payload[14] = static_cast<uint8_t>(sample.kind);
   payload[15] = 0;
+  writeI16(payload + 16, clampI16(clubPitch * 10.0f));
+  writeI16(payload + 18, clampI16(clubRoll * 10.0f));
+  writeI16(payload + 20, clampI16(clubYaw * 10.0f));
   publish(SENSOR_IMU, payload, kImuPayloadLen);
 }
 
@@ -402,9 +518,9 @@ void drawStatus(bool connected, bool haveLatest, const ImuSample &latest) {
   if (!imuReady) {
     display.println("IMU offline");
   } else if (haveLatest) {
-    display.printf("X %5.2f g\n", latest.ax);
-    display.printf("Y %5.2f g\n", latest.ay);
-    display.printf("Z %5.2f g\n", latest.az);
+    display.printf("P %6.1f\n", clubPitch);
+    display.printf("R %6.1f\n", clubRoll);
+    display.printf("Y %6.1f\n", clubYaw);
   } else {
     display.println("IMU waiting");
   }
@@ -509,6 +625,7 @@ void loop() {
     if (readImu(&sample)) {
       latest = sample;
       haveLatest = true;
+      updateClubAngle(sample, now);
       if (connected) {
         publishImu(sample);
       }
@@ -529,10 +646,10 @@ void loop() {
     lastLogMs = now;
     if (haveLatest) {
       Serial.printf(
-          "ble %s seq=%u drops=%lu  accel %5.2f %5.2f %5.2f  btn=%d pressure=%d vib=%d\n",
+          "ble %s seq=%u drops=%lu  angle %6.1f %6.1f %6.1f  btn=%d pressure=%d vib=%d\n",
           connected ? "up" : "down", sequence,
-          static_cast<unsigned long>(droppedFrames), latest.ax, latest.ay,
-          latest.az, digitalRead(kButtonPin), pressureLevel,
+          static_cast<unsigned long>(droppedFrames), clubPitch, clubRoll,
+          clubYaw, digitalRead(kButtonPin), pressureLevel,
           vibrationOn ? 1 : 0);
     } else {
       Serial.printf("ble %s, imu offline\n", connected ? "up" : "down");

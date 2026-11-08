@@ -38,6 +38,10 @@ class ImuReading:
     temp_c: float
     kind: str
     source: int
+    pitch_deg: float = 0.0
+    roll_deg: float = 0.0
+    yaw_deg: float = 0.0
+    has_angles: bool = False
 
     @property
     def sensor_id(self) -> int:
@@ -78,9 +82,16 @@ def encode_frame(sensor_id: int, seq: int, time_ms: int, payload: bytes, flags: 
 
 
 def _decode_imu(time_ms: int, seq: int, payload: bytes) -> ImuReading:
-    if len(payload) != 16:
-        raise ValueError("imu payload must be 16 bytes")
-    ax, ay, az, gx, gy, gz, temp, kind, source = struct.unpack("<hhhhhhhBB", payload)
+    if len(payload) < 16:
+        raise ValueError("imu payload must be at least 16 bytes")
+    ax, ay, az, gx, gy, gz, temp, kind, source = struct.unpack_from("<hhhhhhhBB", payload)
+    pitch = roll = yaw = 0.0
+    has_angles = len(payload) >= 22
+    if has_angles:
+        pitch, roll, yaw = struct.unpack_from("<hhh", payload, 16)
+        pitch /= 10.0
+        roll /= 10.0
+        yaw /= 10.0
     return ImuReading(
         time_ms=time_ms,
         seq=seq,
@@ -93,6 +104,10 @@ def _decode_imu(time_ms: int, seq: int, payload: bytes) -> ImuReading:
         temp_c=temp / 100.0,
         kind=IMU_KIND.get(kind, f"0x{kind:02x}"),
         source=source,
+        pitch_deg=pitch,
+        roll_deg=roll,
+        yaw_deg=yaw,
+        has_angles=has_angles,
     )
 
 
