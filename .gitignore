@@ -3,3 +3,5 @@ node_modules/
 .cursor/
 .opencode/
 .DS_Store
+.pio/
+.venv/
