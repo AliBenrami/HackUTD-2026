@@ -5,6 +5,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <Wire.h>
+#include <driver/gpio.h>
 #include <string.h>
 
 #include "protocol.h"
@@ -360,6 +361,11 @@ bool beginDisplay() {
   return pushPanel();
 }
 
+void IRAM_ATTR onButton() {
+  gpio_set_level(static_cast<gpio_num_t>(kBuzzerPin),
+                 gpio_get_level(static_cast<gpio_num_t>(kButtonPin)) == 0);
+}
+
 void updateVibration(uint32_t now) {
   static int lastPrinted = -10000;
   static uint32_t lastPressurePrintMs = 0;
@@ -436,6 +442,7 @@ void setup() {
   pinMode(kPressurePin, INPUT);
   pinMode(kBuzzerPin, OUTPUT);
   digitalWrite(kBuzzerPin, LOW);
+  attachInterrupt(digitalPinToInterrupt(kButtonPin), onButton, CHANGE);
   analogSetPinAttenuation(kPressurePin, ADC_11db);
   delay(50);
   buttonIdleHigh = digitalRead(kButtonPin) == HIGH;
