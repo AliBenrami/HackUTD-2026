@@ -1,5 +1,5 @@
 import * as Location from 'expo-location';
-import { useEffect, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { courseCenter, holeDrawing } from '../data/courseMaps';
 import { pickClub, windPhrase, type CaddieCard, type ClubCarry, type MissSide, type PinPosition } from '../domain/caddie';
@@ -9,6 +9,11 @@ import { loadWeather, requestCard } from '../services/golf/client';
 import { AppText } from './ui';
 import { CaddieCardView } from './CaddieCard';
 import { HoleMap } from './HoleMap';
+
+export type HoleToolsHandle = {
+  addStroke: () => void;
+  removeStroke: () => void;
+};
 
 export type HoleDraft = {
   miss: MissSide | null;
@@ -40,21 +45,7 @@ async function locatePhone(): Promise<{ lng: number; lat: number } | null> {
 const PINS: PinPosition[] = ['front', 'middle', 'back'];
 const MISSES: Array<MissSide | null> = ['left', 'right', 'short', 'long', null];
 
-export function HoleTools({
-  userId,
-  roundId,
-  courseId,
-  courseName,
-  teeName,
-  holeNumber,
-  par,
-  yards,
-  handicap,
-  windOn,
-  bag,
-  saved,
-  onChange,
-}: {
+export const HoleTools = forwardRef<HoleToolsHandle, {
   userId: string;
   roundId: string;
   courseId: string;
@@ -68,7 +59,21 @@ export function HoleTools({
   bag: ClubCarry[];
   saved: HoleNote | null;
   onChange: (draft: HoleDraft) => void;
-}) {
+}>(function HoleTools({
+  userId,
+  roundId,
+  courseId,
+  courseName,
+  teeName,
+  holeNumber,
+  par,
+  yards,
+  handicap,
+  windOn,
+  bag,
+  saved,
+  onChange,
+}, ref) {
   const drawing = holeDrawing(courseId, holeNumber, teeName);
   const [pin, setPin] = useState<PinPosition>(saved?.pin ?? 'middle');
   const [miss, setMiss] = useState<MissSide | null>(saved?.miss ?? null);
@@ -143,6 +148,18 @@ export function HoleTools({
     setGuessNote(landing.note);
   }
 
+  function removeStroke() {
+    setShots((current) => current.slice(0, -1).map((shot, index) => ({ ...shot, n: index + 1 })));
+    setGuessNote(null);
+  }
+
+  useImperativeHandle(ref, () => ({
+    addStroke: () => {
+      void guess();
+    },
+    removeStroke,
+  }));
+
   return (
     <View className="mt-4">
       {drawing ? (
@@ -157,34 +174,25 @@ export function HoleTools({
           />
           <View className="mt-3 flex-row gap-2">
             <Mini label="Guess landing" onPress={() => void guess()} />
-            <Mini
-              label="Undo stroke"
-              onPress={() => setShots((current) => current.slice(0, -1).map((shot, index) => ({ ...shot, n: index + 1 })))}
-            />
+            <Mini label="Undo" onPress={removeStroke} />
           </View>
           {guessNote ? <AppText className="mt-2 text-sm text-slate">{guessNote}</AppText> : null}
-          <AppText className="mt-2 text-sm text-slate">
-            {shots.length === 0
-              ? `${yards} yards from the tee to the green.`
-              : `${Math.round(yardsBetween(shots[shots.length - 1], drawing.greenCenter))} yards from the last mark to the green.`}
-          </AppText>
         </>
       ) : null}
-      {windOn && windLine && !card?.windNote ? <AppText className="mt-3 text-sm">{windLine}</AppText> : null}
-      <View className="mt-4 flex-row gap-2">
+      {card ? <CaddieCardView card={card} /> : null}
+      {windOn && windLine && !card?.windNote ? <AppText className="mt-2 text-sm">{windLine}</AppText> : null}
+      <View className="mt-3 flex-row gap-2">
         {PINS.map((value) => (
-          <Choice key={value} label={value === 'middle' ? 'Middle' : value === 'front' ? 'Front pin' : 'Back pin'} selected={pin === value} onPress={() => setPin(value)} />
+          <Choice key={value} label={value === 'middle' ? 'Middle' : value === 'front' ? 'Front' : 'Back'} selected={pin === value} onPress={() => setPin(value)} />
         ))}
       </View>
-      <AppText className="mt-2 text-xs text-slate">Front shortens the target 8 yards. Back adds 8. That is a convention, not a laser.</AppText>
-      {card ? <CaddieCardView card={card} /> : null}
-      <AppText className="mb-2 mt-4 text-sm text-slate">Where the tee shot missed</AppText>
+      <AppText className="mb-2 mt-3 text-sm text-slate">Tee shot</AppText>
       <View className="flex-row flex-wrap gap-2">
         {MISSES.map((value) => (
           <Choice key={value ?? 'skip'} label={value ?? 'Skip'} selected={miss === value} onPress={() => setMiss(value)} />
         ))}
       </View>
-      <AppText className="mb-2 mt-4 text-sm text-slate">Green in regulation</AppText>
+      <AppText className="mb-2 mt-3 text-sm text-slate">Green in regulation</AppText>
       <View className="flex-row gap-2">
         <Choice label="Yes" selected={gir === true} onPress={() => setGir(true)} />
         <Choice label="No" selected={gir === false} onPress={() => setGir(false)} />
@@ -192,7 +200,7 @@ export function HoleTools({
       </View>
     </View>
   );
-}
+});
 
 function Choice({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
   return (

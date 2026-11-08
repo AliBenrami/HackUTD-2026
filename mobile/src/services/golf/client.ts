@@ -108,15 +108,19 @@ export async function requestCard(input: CardRequest, bag: ClubCarry[]): Promise
 }
 
 export async function loadWeather(courseId: string, center: { lat: number; lng: number } | null): Promise<WindReading | null> {
-  const query = new URLSearchParams({ course_id: courseId });
-  if (center) {
-    query.set('lat', String(center.lat));
-    query.set('lng', String(center.lng));
+  try {
+    const query = new URLSearchParams({ course_id: courseId });
+    if (center) {
+      query.set('lat', String(center.lat));
+      query.set('lng', String(center.lng));
+    }
+    const response = await request(`/weather?${query.toString()}`);
+    if (!response.ok) return null;
+    const body = (await response.json()) as { wind: WindReading | null };
+    return body.wind;
+  } catch {
+    return null;
   }
-  const response = await request(`/weather?${query.toString()}`);
-  if (!response.ok) return null;
-  const body = (await response.json()) as { wind: WindReading | null };
-  return body.wind;
 }
 
 export async function requestRecap(userId: string, roundId: string, summary: unknown, notes: HoleNote[]): Promise<string[] | null> {

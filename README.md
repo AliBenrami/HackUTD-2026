@@ -15,7 +15,7 @@ npx expo start
 
 Set `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in `mobile/.env`. Those values stay local.
 
-Mapped courses from OpenStreetMap need the rows in `mobile/supabase/mapped_courses.sql` applied in the Supabase SQL editor before a round can start on them. The phone keeps score in Supabase and sends bags, shot marks, and caddie cards to the swing server.
+Real courses open on a satellite map. Shot marks and the path sit on that imagery. A phone uses Apple Maps or Google Maps. The web app uses Esri imagery, or MapTiler when `EXPO_PUBLIC_MAPTILER_KEY` is set. Fictional courses keep the sketch map. Mapped courses still need the rows in `mobile/supabase/mapped_courses.sql` applied in the Supabase SQL editor before a round can start on them. The phone keeps score in Supabase and sends bags, shot marks, and caddie cards to the swing server.
 
 ```bash
 cd backend
