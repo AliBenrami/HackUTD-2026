@@ -42,6 +42,12 @@
         }
       ],
       [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "GolfAR uses your location to guess where the ball is, because you are usually standing next to it."
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "GolfAR imports a swing video from your library."

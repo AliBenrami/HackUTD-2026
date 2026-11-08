@@ -1,19 +1,32 @@
-import { router } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Link, router } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, View, type ScrollViewInstance } from 'react-native';
 import Svg, { Circle, Line, Rect } from 'react-native-svg';
+import { ballTraces } from '../data/ballTrace';
 import { swingClip, swingFrames } from '../data/swingFrames';
-import { SCORE_CUTOFF, swingReview } from '../data/swingReview';
+import { SCORE_CUTOFF, swingReview, type ReviewedSwing } from '../data/swingReview';
 import { SWING_FPS, swingTrack } from '../data/swingTrack';
+import { angleVector } from '../domain/caddie';
 import { formatWhen } from '../domain/format';
+import { similarSwing } from '../services/golf/client';
+import {
+  appendShotIds,
+  challengeReport,
+  classifySwing,
+  replayWindow,
+  roleLabel,
+  roleNote,
+  timingOf,
+  type SwingRole,
+  type TimedSwing,
+} from '../domain/swingSession';
 import type { SwingSession } from '../domain/types';
-import { SWING_PHASE_MODEL } from '../services/swing/measurement';
+import { SWING_PHASE_MODEL, type MeasurementRecord } from '../services/swing/measurement';
 import { useGolf } from '../state/GolfContext';
 import { colors } from '../theme/colors';
-import { ballTraces } from '../data/ballTrace';
 import { BallTrace } from './BallTrace';
-import { SwingCompare } from './SwingCompare';
 import { MeasuredSwingView } from './SwingMeasure';
 import { AppText } from './ui';
 
@@ -33,6 +46,8 @@ const CLUB_ROWS = [
 const FRAME_HEIGHT = 1920;
 const CROP_Y = 520;
 const CROP_HEIGHT = 1360;
+const CHALLENGE_KEY = 'golfar.consistency.v1';
+
 const SHORT_LABEL: Record<string, string> = {
   Address: 'Address',
   'Toe-up': 'Toe-up',
@@ -47,6 +62,63 @@ const SHORT_LABEL: Record<string, string> = {
 type SwingChoice =
   | { key: string; kind: 'analyzed'; swingIndex: number; label: string; detail: string }
   | { key: string; kind: 'saved'; session: SwingSession; label: string; detail: string };
+
+type ReplayTarget = { kind: 'range'; swingIndex: number } | { kind: 'saved'; videoId: string; swingIndex: number };
+
+type CatalogSwing = TimedSwing & {
+  label: string;
+  role: SwingRole;
+  target: ReplayTarget;
+};
+
+type ChallengeState = {
+  active: boolean;
+  shotIds: string[];
+  passedIds: string[];
+};
+
+type ReplayState = {
+  targets: [ReplayTarget, ReplayTarget];
+  step: 0 | 1;
+  token: number;
+};
+
+function catalogSwing(id: string, label: string, swing: ReviewedSwing, ball: readonly { x: number; y: number }[], target: ReplayTarget): CatalogSwing {
+  return {
+    id,
+    label,
+    role: classifySwing({ events: swing.events, ball }),
+    ...timingOf(swing.events),
+    target,
+  };
+}
+
+function buildCatalog(saved: SwingSession[], measurements: Record<string, MeasurementRecord>): CatalogSwing[] {
+  const range = swingReview.map((swing, index) =>
+    catalogSwing(`range:${swing.id}`, `Range swing ${swing.id}`, swing, ballTraces[index] ?? [], {
+      kind: 'range',
+      swingIndex: index,
+    }),
+  );
+  const seen = new Set<string>();
+  const recorded: CatalogSwing[] = [];
+  for (const session of saved) {
+    if (seen.has(session.videoId)) continue;
+    seen.add(session.videoId);
+    const measured = measurements[session.videoId];
+    if (measured?.status !== 'ready') continue;
+    measured.measured.swings.forEach((swing, index) => {
+      recorded.push(
+        catalogSwing(`${session.videoId}:${swing.id}`, `${session.club} ${index + 1}`, swing, swing.ball ?? [], {
+          kind: 'saved',
+          videoId: session.videoId,
+          swingIndex: index,
+        }),
+      );
+    });
+  }
+  return [...range, ...recorded];
+}
 
 type VideoGroup = {
   id: string;
@@ -76,7 +148,7 @@ function buildVideos(saved: SwingSession[]): VideoGroup[] {
         kind: 'analyzed',
         swingIndex: index,
         label: `Swing ${swing.id}`,
-        detail: `${impact.timeS.toFixed(2)} s`,
+        detail: roleLabel(classifySwing({ events: swing.events, ball: ballTraces[index] ?? [] })),
       };
     }),
   };
@@ -119,7 +191,8 @@ function degrees(value: number | null) {
 }
 
 export function SwingReview() {
-  const { swings, removeSwing, measurements, analyzeSwing } = useGolf();
+  const { swings, removeSwing, measurements, analyzeSwing, bag } = useGolf();
+  const [pickingClub, setPickingClub] = useState(false);
   const saved = swings.filter((swing) => swing.source !== 'demo');
   const savedIds = saved.map((swing) => swing.id).join('|');
   const videos = buildVideos(saved);
@@ -148,12 +221,41 @@ export function SwingReview() {
         <AppText weight="semibold" className="text-lg">
           Videos
         </AppText>
-        <Pressable accessibilityRole="button" onPress={() => router.push('/record')} className="min-h-11 justify-center">
+        <Pressable accessibilityRole="button" onPress={() => setPickingClub((open) => !open)} className="min-h-11 justify-center">
           <AppText weight="semibold" className="text-cyan">
             Record
           </AppText>
         </Pressable>
       </View>
+
+      {pickingClub ? (
+        <View className="mb-4">
+          <Link href="/challenge" asChild>
+            <Pressable
+              accessibilityRole="button"
+              className="mb-3 min-h-14 items-center justify-center rounded-2xl border border-white/10 bg-panel"
+            >
+              <AppText weight="semibold">Five-shot challenge</AppText>
+            </Pressable>
+          </Link>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.library}>
+          {bag.clubs.map((club) => (
+            <Pressable
+              key={club.name}
+              accessibilityRole="button"
+              onPress={() => {
+                setPickingClub(false);
+                router.push({ pathname: '/record', params: { club: club.name } });
+              }}
+              style={styles.card}
+            >
+              <AppText weight="semibold">{club.name}</AppText>
+              <AppText className="mt-1 text-xs text-slate">{club.carry} yds</AppText>
+            </Pressable>
+          ))}
+        </ScrollView>
+        </View>
+      ) : null}
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.library}>
         {videos.map((item) => {
@@ -232,8 +334,17 @@ export function SwingReview() {
   );
 }
 
-function AnalyzedSwing({ swingIndex }: { swingIndex: number }) {
+function AnalyzedSwing({
+  swingIndex,
+  autoPlayToken = 0,
+  onAutoPlayDone,
+}: {
+  swingIndex: number;
+  autoPlayToken?: number;
+  onAutoPlayDone?: () => void;
+}) {
   const swing = swingReview[swingIndex];
+  const role = classifySwing({ events: swing.events, ball: ballTraces[swingIndex] ?? [] });
   const [eventIndex, setEventIndex] = useState(() => impactIndex(swingIndex));
   const [playing, setPlaying] = useState(false);
   const [parked, setParked] = useState(true);
@@ -242,6 +353,11 @@ function AnalyzedSwing({ swingIndex }: { swingIndex: number }) {
   const phases = useRef<ScrollViewInstance>(null);
   const parkedRef = useRef(true);
   const cueTimeRef = useRef(swing.events[impactIndex(swingIndex)].timeS);
+  const doneRef = useRef(onAutoPlayDone);
+  doneRef.current = onAutoPlayDone;
+  const replayEndRef = useRef<number | null>(null);
+  const replayArmedRef = useRef(false);
+  const replayTokenRef = useRef(0);
   const cue = swing.events[eventIndex];
   const swingEnd = swing.events[swing.events.length - 1].timeS + 0.8;
   const player = useVideoPlayer(swingClip, (instance) => {
@@ -274,6 +390,16 @@ function AnalyzedSwing({ swingIndex }: { swingIndex: number }) {
     const timeSub = player.addListener('timeUpdate', ({ currentTime }) => {
       const frame = Math.max(0, Math.min(swingTrack.length - 1, Math.round(currentTime * SWING_FPS)));
       setPlayFrame((current) => (current === frame ? current : frame));
+      if (replayEndRef.current != null) {
+        if (currentTime <= replayEndRef.current - 0.2) replayArmedRef.current = true;
+        if (replayArmedRef.current && currentTime >= replayEndRef.current) {
+          replayEndRef.current = null;
+          replayArmedRef.current = false;
+          player.pause();
+          doneRef.current?.();
+          return;
+        }
+      }
       if (!player.playing) return;
       if (currentTime >= swingEnd) {
         player.pause();
@@ -294,6 +420,28 @@ function AnalyzedSwing({ swingIndex }: { swingIndex: number }) {
   useEffect(() => {
     phases.current?.scrollTo({ x: Math.max(0, eventIndex * 84 - 24), animated: true });
   }, [eventIndex]);
+
+  useEffect(() => {
+    if (!autoPlayToken || replayTokenRef.current === autoPlayToken) return;
+    replayTokenRef.current = autoPlayToken;
+    const window = replayWindow(swing.events);
+    if (!window) {
+      doneRef.current?.();
+      return;
+    }
+    replayEndRef.current = window.end;
+    replayArmedRef.current = false;
+    parkedRef.current = false;
+    setParked(false);
+    cueTimeRef.current = window.start;
+    const play = () => {
+      player.currentTime = window.start;
+      player.play();
+    };
+    play();
+    const timers = [80, 240].map((delay) => setTimeout(play, delay));
+    return () => timers.forEach(clearTimeout);
+  }, [autoPlayToken, player, swing.events]);
 
   function selectPhase(index: number) {
     const time = swing.events[index].timeS;
@@ -406,6 +554,10 @@ function AnalyzedSwing({ swingIndex }: { swingIndex: number }) {
       {(ballTraces[swingIndex] ?? []).length > 0 ? (
         <AppText className="mt-2 text-sm text-slate">Ball flight from the detector. It stops when the ball is lost.</AppText>
       ) : null}
+      <AppText className="mt-2 text-sm" style={{ color: role === 'shot' ? colors.cyan : AMBER }}>
+        {roleLabel(role)}
+      </AppText>
+      <AppText className="mt-1 text-sm text-slate">{roleNote(role)}</AppText>
 
       <View className="mt-5">
         <Row label="" left="Left" right="Right" muted />
@@ -413,7 +565,6 @@ function AnalyzedSwing({ swingIndex }: { swingIndex: number }) {
         <Row label="Knee" left={degrees(cue.angles.leftKnee)} right={degrees(cue.angles.rightKnee)} />
         <Row label="Torso" left={degrees(cue.angles.torsoTilt)} right="" />
       </View>
-      <SwingCompare swing={swing} phaseName={cue.name} />
       <View className="mt-3">
         {CLUB_ROWS.map(([key, label]) => {
           const detection = cue.clubs[key];
@@ -452,15 +603,49 @@ function SavedSwing({
   }, [onAnalyze, phaseModel, swing.videoUri]);
   if (measurement?.status === 'ready' && swing.videoUri) {
     return (
+      <View>
+        <SimilarNote videoId={swing.videoId} events={measurement.measured.swings[0]?.events ?? null} />
       <MeasuredSwingView
         videoUri={swing.videoUri}
         measurement={measurement.measured}
         footer={heading}
         onAnalyze={onAnalyze}
+        videoId={swing.videoId}
       />
+      </View>
     );
   }
   return <PlainSavedSwing swing={swing} measurement={measurement} onAnalyze={onAnalyze} heading={heading} />;
+}
+
+function SimilarNote({
+  videoId,
+  events,
+}: {
+  videoId: string;
+  events: ReviewedSwing['events'] | null;
+}) {
+  const { userId } = useGolf();
+  const [text, setText] = useState<string | null>(null);
+  useEffect(() => {
+    if (!events) return;
+    let alive = true;
+    similarSwing(userId, videoId, angleVector(events))
+      .then((result) => {
+        if (!alive || !result) return;
+        setText(
+          result.close
+            ? `Closest filmed swing is a ${result.club}, about ${result.rms}° apart.`
+            : (result.reason ?? null),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [events, userId, videoId]);
+  if (!text) return null;
+  return <AppText className="mb-3 text-sm text-slate">{text}</AppText>;
 }
 
 function SavedHeading({ swing, onRemove }: { swing: SwingSession; onRemove: () => void }) {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { AppText } from './ui';
 import Animated, { Easing, useAnimatedProps, useSharedValue, withDelay, withTiming } from 'react-native-reanimated';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { useReducedMotion } from '../hooks/useReducedMotion';
@@ -56,10 +57,12 @@ function ContourPath({
 export function TopoMap({
   seed,
   animate = false,
+  sketch = false,
   style,
 }: {
   seed: string;
   animate?: boolean;
+  sketch?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
   const model = useMemo(() => buildTopo(seed), [seed]);
@@ -111,6 +114,11 @@ export function TopoMap({
         />
         <Circle cx={model.tee.cx} cy={model.tee.cy} r={0.8} fill={colors.cyan} />
       </Svg>
+      {sketch ? (
+        <View className="absolute bottom-2 left-3">
+          <AppText className="text-[10px] text-slate">Sketch</AppText>
+        </View>
+      ) : null}
     </View>
   );
 }

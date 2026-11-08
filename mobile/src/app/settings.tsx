@@ -8,8 +8,9 @@ import { useGolf } from '../state/GolfContext';
 import { colors, fonts } from '../theme/colors';
 
 export default function SettingsScreen() {
-  const { player, preferences, updatePlayerName, updatePreferences, setDeviceLinked, signOut } = useGolf();
+  const { player, preferences, updatePlayerName, updatePreferences, setDeviceLinked, signOut, bag, updateBag } = useGolf();
   const [name, setName] = useState(player.name);
+  const [index, setIndex] = useState(bag.handicapIndex == null ? '' : String(bag.handicapIndex));
 
   function patch(next: ARPreferences) {
     void updatePreferences(next);
@@ -37,6 +38,27 @@ export default function SettingsScreen() {
         className="min-h-12 rounded-2xl border border-white/10 bg-panel px-4 text-base"
         style={{ fontFamily: fonts.regular, color: colors.mist }}
       />
+
+      <AppText weight="semibold" className="mb-2 mt-6 text-lg">
+        Handicap index
+      </AppText>
+      <TextInput
+        value={index}
+        onChangeText={setIndex}
+        onEndEditing={() => {
+          const value = index.trim() === '' ? null : Number(index);
+          void updateBag(bag.clubs, value != null && Number.isFinite(value) ? value : null);
+        }}
+        placeholder="Optional"
+        placeholderTextColor={colors.slate}
+        keyboardType="decimal-pad"
+        className="min-h-12 rounded-2xl border border-white/10 bg-panel px-4 text-base"
+        style={{ fontFamily: fonts.regular, color: colors.mist }}
+      />
+      <AppText className="mt-2 text-xs text-slate">Used for a course handicap when the tee has a rating and a slope.</AppText>
+      <View className="mt-4">
+        <Button label="Edit bag" variant="secondary" onPress={() => router.push('/bag')} />
+      </View>
 
       <AppText weight="semibold" className="mb-2 mt-6 text-lg">
         AR device

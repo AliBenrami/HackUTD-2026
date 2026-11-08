@@ -6,7 +6,7 @@ import { TopoMap } from '../../components/TopoMap';
 import { AppText, BackHeader, Screen } from '../../components/ui';
 import { formatDistance } from '../../domain/format';
 import { holesForNine, sumPar, sumYards } from '../../domain/scoring';
-import { courses, defaultTee, searchCourses } from '../../data/courses';
+import { defaultTee, getCourse, searchCourses } from '../../data/courses';
 import { useGolf } from '../../state/GolfContext';
 import { colors, fonts } from '../../theme/colors';
 
@@ -15,7 +15,7 @@ export default function CourseListScreen() {
   const [query, setQuery] = useState('');
   const results = useMemo(() => searchCourses(query), [query]);
   const recent = recentCourseIds
-    .map((id) => courses.find((course) => course.id === id))
+    .map((id) => getCourse(id))
     .filter((course) => course != null);
 
   return (

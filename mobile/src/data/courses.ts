@@ -1,4 +1,5 @@
 import type { Course, HoleInfo, TeeSet } from '../domain/types';
+import { mappedCourses } from './courseMaps';
 
 type Yardage = [number, number, number, number];
 
@@ -157,7 +158,7 @@ export const courses: Course[] = [
 ];
 
 export function getCourse(courseId: string): Course | undefined {
-  return courses.find((course) => course.id === courseId);
+  return courses.find((course) => course.id === courseId) ?? mappedCourses.find((course) => course.id === courseId);
 }
 
 export function getTee(course: Course, teeSetId: string): TeeSet | undefined {
@@ -166,8 +167,9 @@ export function getTee(course: Course, teeSetId: string): TeeSet | undefined {
 
 export function searchCourses(query: string): Course[] {
   const needle = query.trim().toLowerCase();
-  if (!needle) return courses;
-  return courses.filter((course) => {
+  const catalog = [...courses, ...mappedCourses];
+  if (!needle) return catalog;
+  return catalog.filter((course) => {
     const haystack = `${course.name} ${course.location}`.toLowerCase();
     return haystack.includes(needle);
   });

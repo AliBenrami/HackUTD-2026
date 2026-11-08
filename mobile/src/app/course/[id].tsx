@@ -1,7 +1,10 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, View } from 'react-native';
+import { HoleMap } from '../../components/HoleMap';
 import { TopoMap } from '../../components/TopoMap';
+import { courseHandicap } from '../../domain/caddie';
+import { holeDrawing } from '../../data/courseMaps';
 import { AppText, BackHeader, Button, Screen, Segmented } from '../../components/ui';
 import { formatDistance } from '../../domain/format';
 import { holesForNine, sumPar, sumYards } from '../../domain/scoring';
@@ -18,7 +21,7 @@ const NINES: { value: NineSelection; label: string }[] = [
 export default function CourseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const course = getCourse(String(id));
-  const { activeRound, startRound, preferences, noteCourse } = useGolf();
+  const { activeRound, startRound, preferences, noteCourse, bag } = useGolf();
   const [teeId, setTeeId] = useState(course?.teeSets[1]?.id ?? course?.teeSets[0]?.id ?? '');
   const [nine, setNine] = useState<NineSelection>('full');
   const noted = useRef(false);
@@ -39,6 +42,11 @@ export default function CourseDetailScreen() {
 
   const tee = course.teeSets.find((item) => item.id === teeId) ?? course.teeSets[0];
   const holes = holesForNine(tee, nine);
+  const drawing = holeDrawing(course.id, holes[0]?.number ?? 1, tee.name);
+  const net =
+    nine === 'full' && bag.handicapIndex != null && tee.rating != null && tee.slope != null
+      ? courseHandicap(bag.handicapIndex, tee.slope, tee.rating, sumPar(holes))
+      : null;
 
   async function onStart() {
     if (!course) return;
@@ -59,9 +67,15 @@ export default function CourseDetailScreen() {
 
   return (
     <Screen header={<BackHeader title="Course" onBack={() => router.back()} />}>
-      <View className="mb-4 h-52 overflow-hidden rounded-3xl border border-white/10 bg-panel">
-        <TopoMap seed={`${course.id}-${nine}`} animate />
-      </View>
+      {drawing ? (
+        <View className="mb-4">
+          <HoleMap hole={drawing} shots={[]} />
+        </View>
+      ) : (
+        <View className="mb-4 h-52 overflow-hidden rounded-3xl border border-white/10 bg-panel">
+          <TopoMap seed={`${course.id}-${nine}`} animate sketch />
+        </View>
+      )}
       <AppText weight="semibold" className="text-2xl">
         {course.name}
       </AppText>
@@ -71,7 +85,7 @@ export default function CourseDetailScreen() {
       <View className="mt-5 flex-row gap-3">
         <Stat label="Par" value={String(sumPar(holes))} />
         <Stat label="Distance" value={formatDistance(sumYards(holes), preferences.units)} />
-        <Stat label="Slope" value={String(tee.slope)} />
+        <Stat label="Slope" value={tee.slope == null ? '—' : String(tee.slope)} />
       </View>
 
       <AppText weight="medium" className="mb-2 mt-6 text-sm text-slate">
@@ -99,7 +113,8 @@ export default function CourseDetailScreen() {
         })}
       </View>
       <AppText className="mt-2 text-xs text-slate">
-        Rating {tee.rating.toFixed(1)} · {tee.name} tees
+        {tee.rating == null ? 'Rating is not in the map data' : `Rating ${tee.rating.toFixed(1)}`} · {tee.name} tees
+        {net != null ? ` · course handicap ${net}` : ''}
       </AppText>
 
       <AppText weight="medium" className="mb-2 mt-6 text-sm text-slate">

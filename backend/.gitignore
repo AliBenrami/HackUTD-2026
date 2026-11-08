@@ -3,3 +3,5 @@ models/
 __pycache__/
 .pytest_cache/
 *.pyc
+data/
+tests/_golf.json
