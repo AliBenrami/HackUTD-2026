@@ -1,39 +1,37 @@
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
+#include <TFT_eSPI.h>
 #include <Wire.h>
-#include <driver/gpio.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "protocol.h"
 
-// GY-521 on I2C. A second module can share SDA/SCL with AD0 tied to 3V3.
+// Onboard 4.0" ST7796, same init and pins as Kori (TFT_eSPI User_Setup.h).
+// GY-521 on this board's I2C socket. GPIO 21 and 22 are not that socket:
+// 22 drives the red LED, and 21 is the spare SPI chip select.
 //   VCC -> 3V3
 //   GND -> GND
-//   SDA -> GPIO 8
-//   SCL -> GPIO 9
-
-// SSD1306 0.96" OLED shares this bus. Address is 0x3C.
-// With the glass facing you and the pins along the bottom, the
-// usual order is GND, VCC, SCL, SDA. Match the printed labels.
-constexpr int kSdaPin = 8;
-constexpr int kSclPin = 9;
-constexpr int kScreenWidth = 128;
-constexpr int kScreenHeight = 64;
-// Button module S goes to GPIO 4. Pressure-module S goes to GPIO 5.
-// Buzzer on GPIO 18. Press the button and it sounds. Let go and it stops.
-constexpr int kButtonPin = 4;
-constexpr int kPressurePin = 5;
-constexpr int kBuzzerPin = 18;
-constexpr uint8_t kMpuAddress = 0x68;
+//   SDA -> GPIO 32
+//   SCL -> GPIO 25
+//   AD0 -> GND (address 0x68) or 3V3 (address 0x69)
+constexpr int kScreenW = 480;
+constexpr int kScreenH = 320;
+constexpr int kPlotX = 10;
+constexpr int kPlotY = 44;
+constexpr int kPlotW = 156;
+constexpr int kPlotH = 228;
+constexpr int kPanelX = 174;
+constexpr int kPanelY = 44;
+constexpr int kPanelW = 296;
+constexpr int kPanelH = 228;
 constexpr uint32_t kI2cHz = 100000;
-constexpr uint32_t kSamplePeriodMs = 5;  // 200 Hz, fast enough for a swing
+constexpr uint32_t kSamplePeriodMs = 5;  // 200 Hz
 constexpr uint32_t kLogPeriodMs = 1000;
-constexpr uint32_t kDisplayPeriodMs = 400;
+constexpr uint32_t kDisplayPeriodMs = 100;
 
 constexpr char kDeviceName[] = "HackUTD";
 constexpr char kServiceUuid[] = "6f4c0001-5a1e-4b3d-9c8a-1e2f3a4b5c6d";
@@ -65,6 +63,18 @@ struct ImuSample {
   ImuKind kind;
 };
 
+TFT_eSPI tft;
+TFT_eSprite plot(&tft);
+bool plotReady = false;
+uint16_t colInk = 0;
+uint16_t colPanel = 0;
+uint16_t colRaised = 0;
+uint16_t colLine = 0;
+uint16_t colCyan = 0;
+uint16_t colViolet = 0;
+uint16_t colMagenta = 0;
+uint16_t colMist = 0;
+uint16_t colSlate = 0;
 BLEServer *bleServer = nullptr;
 BLECharacteristic *streamChar = nullptr;
 volatile bool clientConnected = false;
@@ -76,12 +86,9 @@ uint32_t droppedFrames = 0;
 uint16_t sequence = 0;
 ImuKind imuKind = ImuKind::Mpu6050;
 bool imuReady = false;
-Adafruit_SSD1306 display(kScreenWidth, kScreenHeight, &Wire, -1);
-bool displayReady = false;
-uint8_t oledAddr = 0x3C;
-bool vibrationOn = false;
-bool buttonIdleHigh = true;
-int pressureLevel = HIGH;
+int sdaPin = 32;
+int sclPin = 25;
+uint8_t mpuAddress = 0x68;
 
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
@@ -97,19 +104,19 @@ class ServerCallbacks : public BLEServerCallbacks {
 };
 
 bool writeReg(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(kMpuAddress);
+  Wire.beginTransmission(mpuAddress);
   Wire.write(reg);
   Wire.write(value);
   return Wire.endTransmission() == 0;
 }
 
 bool readRegs(uint8_t reg, uint8_t *buf, size_t len) {
-  Wire.beginTransmission(kMpuAddress);
+  Wire.beginTransmission(mpuAddress);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) {
     return false;
   }
-  if (Wire.requestFrom(kMpuAddress, static_cast<uint8_t>(len)) != len) {
+  if (Wire.requestFrom(mpuAddress, static_cast<uint8_t>(len)) != len) {
     return false;
   }
   for (size_t i = 0; i < len; ++i) {
@@ -200,6 +207,9 @@ Quat addressPose = {1, 0, 0, 0};
 float clubPitch = 0;
 float clubRoll = 0;
 float clubYaw = 0;
+bool addressLocked = false;
+float viewPitch = 0;
+float viewRoll = 0;
 uint32_t lastPoseMs = 0;
 uint32_t stillSinceMs = 0;
 bool holdingStill = false;
@@ -290,6 +300,7 @@ void updateClubAngle(const ImuSample &sample, uint32_t now) {
       stillSinceMs = now;
     } else if (now - stillSinceMs >= 400) {
       addressPose = pose;
+      addressLocked = true;
     }
   } else {
     holdingStill = false;
@@ -300,7 +311,6 @@ void updateClubAngle(const ImuSample &sample, uint32_t now) {
   eulerDegrees(fromAddress, clubPitch, clubRoll, clubYaw);
 }
 
-// Any future sensor calls this with its own id and payload.
 bool publish(uint8_t sensorId, const uint8_t *payload, uint8_t payloadLen) {
   if (payloadLen > kMaxPayload) {
     return false;
@@ -368,7 +378,6 @@ void flushTx() {
   if (!clientConnected || streamChar == nullptr || txLen == 0) {
     return;
   }
-  // A few notifications per loop drains a frame without stalling I2C.
   for (int burst = 0; burst < 6 && clientConnected && txLen > 0; ++burst) {
     size_t chunk = notifyLimit();
     if (chunk == 0) {
@@ -384,150 +393,238 @@ void flushTx() {
   }
 }
 
-bool i2cPresent(uint8_t addr) {
+void useBus(int sda, int scl) {
+  sdaPin = sda;
+  sclPin = scl;
+  pinMode(sda, INPUT_PULLUP);
+  pinMode(scl, INPUT_PULLUP);
+  Wire.begin(sda, scl);
+  Wire.setClock(kI2cHz);
+}
+
+bool addressAcks(uint8_t addr) {
   Wire.beginTransmission(addr);
   return Wire.endTransmission() == 0;
 }
 
-void scanI2c() {
-  Serial.print("I2C scan:");
-  bool any = false;
-  for (uint8_t addr = 1; addr < 127; ++addr) {
-    if (!i2cPresent(addr)) {
-      continue;
-    }
-    any = true;
-    Serial.printf(" 0x%02X", addr);
-  }
-  Serial.println(any ? "" : " none");
-}
-
-bool panelCommand(uint8_t cmd) {
-  Wire.beginTransmission(oledAddr);
-  Wire.write(0x00);
-  Wire.write(cmd);
-  return Wire.endTransmission() == 0;
-}
-
-// Page mode plus both charge-pump commands. The same 0.96" boards
-// answer as SSD1306 or SH1106, and horizontal mode leaves the SH1106 dark.
-bool panelUp() {
-  static const uint8_t seq[] = {
-      0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40, 0xAD, 0x8B,
-      0x8D, 0x14, 0x20, 0x02, 0xA1, 0xC8, 0xDA, 0x12, 0x81, 0xCF,
-      0xD9, 0xF1, 0xDB, 0x40, 0xA4, 0xA6, 0xAF};
-  for (uint8_t cmd : seq) {
-    if (!panelCommand(cmd)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool pushPanel() {
-  const uint8_t *buffer = display.getBuffer();
-  for (uint8_t page = 0; page < 8; ++page) {
-    // Column 2 is the visible origin on SH1106 and a 2px shift on SSD1306.
-    if (!panelCommand(0xB0 | page) || !panelCommand(0x02) || !panelCommand(0x10)) {
-      return false;
-    }
-    const uint8_t *row = buffer + static_cast<size_t>(page) * kScreenWidth;
-    for (int col = 0; col < kScreenWidth; col += 32) {
-      Wire.beginTransmission(oledAddr);
-      Wire.write(0x40);
-      for (int i = 0; i < 32; ++i) {
-        Wire.write(row[col + i]);
+// This display's I2C socket is SDA 32 / SCL 25. The other pairs cover a
+// swapped plug and the older 21/22 wiring.
+bool probeMpu() {
+  static constexpr int kBuses[][2] = {{32, 25}, {25, 32}, {21, 22}, {22, 21}};
+  static constexpr uint8_t kAddresses[] = {0x68, 0x69};
+  for (const auto &bus : kBuses) {
+    useBus(bus[0], bus[1]);
+    delay(5);
+    for (uint8_t addr : kAddresses) {
+      if (!addressAcks(addr)) {
+        continue;
       }
-      if (Wire.endTransmission() != 0) {
-        return false;
+      mpuAddress = addr;
+      Serial.printf("gyro at 0x%02X  SDA %d SCL %d\n", addr, sdaPin, sclPin);
+      if (beginMpu()) {
+        return true;
       }
     }
   }
-  return true;
+  Serial.println("gyro not found on SDA 32 SCL 25");
+  return false;
 }
 
-bool beginDisplay() {
-  uint8_t addr = 0;
-  if (i2cPresent(0x3C)) {
-    addr = 0x3C;
-  } else if (i2cPresent(0x3D)) {
-    addr = 0x3D;
-  } else {
-    return false;
-  }
-  oledAddr = addr;
-  // periphBegin stays false so Wire keeps GPIO 8 and GPIO 9.
-  if (!display.begin(SSD1306_SWITCHCAPVCC, addr, false, false)) {
-    return false;
-  }
-  if (!panelUp()) {
-    return false;
-  }
-  display.fillRect(0, 0, kScreenWidth, kScreenHeight, SSD1306_WHITE);
-  if (!pushPanel()) {
-    return false;
-  }
-  delay(200);
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.println("HackUTD");
-  display.printf("OLED 0x%02X\n", addr);
-  return pushPanel();
+void loadPalette() {
+  colInk = tft.color565(8, 12, 18);
+  colPanel = tft.color565(17, 25, 35);
+  colRaised = tft.color565(23, 34, 50);
+  colLine = tft.color565(36, 48, 62);
+  colCyan = tft.color565(0, 217, 232);
+  colViolet = tft.color565(139, 92, 246);
+  colMagenta = tft.color565(232, 121, 249);
+  colMist = tft.color565(243, 246, 250);
+  colSlate = tft.color565(139, 151, 168);
 }
 
-void IRAM_ATTR onButton() {
-  gpio_set_level(static_cast<gpio_num_t>(kBuzzerPin),
-                 gpio_get_level(static_cast<gpio_num_t>(kButtonPin)) == 0);
+void paintText(int x, int y, uint8_t font, uint16_t color, uint16_t bg, int pad,
+               const char *text) {
+  tft.setTextFont(font);
+  tft.setTextColor(color, bg);
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextPadding(pad);
+  tft.drawString(text, x, y);
 }
 
-void updateVibration(uint32_t now) {
-  static int lastPrinted = -10000;
-  static uint32_t lastPressurePrintMs = 0;
-  const bool pressed = digitalRead(kButtonPin) == LOW;
-  digitalWrite(kBuzzerPin, pressed ? HIGH : LOW);
-  if (pressed != vibrationOn) {
-    vibrationOn = pressed;
-    if (pressed) {
-      Serial.println("beep");
+void drawChrome() {
+  tft.fillScreen(colInk);
+  tft.fillRect(0, 0, kScreenW, 3, colCyan);
+  paintText(16, 12, 4, colCyan, colInk, 0, "GOLFAR");
+  paintText(392, 14, 2, colSlate, colInk, 0, "PHONE");
+
+  tft.fillRect(kPlotX, kPlotY, kPlotW, kPlotH, colPanel);
+  tft.drawRect(kPlotX - 1, kPlotY - 1, kPlotW + 2, kPlotH + 2, colLine);
+  tft.fillRect(kPanelX, kPanelY, kPanelW, kPanelH, colRaised);
+  tft.drawRect(kPanelX - 1, kPanelY - 1, kPanelW + 2, kPanelH + 2, colLine);
+
+  const char *angles[] = {"PITCH", "ROLL", "YAW"};
+  for (int i = 0; i < 3; ++i) {
+    paintText(kPanelX + 12, 56 + i * 32, 2, colSlate, colRaised, 0, angles[i]);
+  }
+  tft.drawFastHLine(kPanelX + 10, 148, kPanelW - 20, colLine);
+  paintText(kPanelX + 12, 156, 2, colSlate, colRaised, 0, "GYRO");
+  paintText(kPanelX + 250, 156, 2, colSlate, colRaised, 0, "dps");
+  tft.drawFastHLine(kPanelX + 10, 200, kPanelW - 20, colLine);
+  paintText(kPanelX + 12, 208, 2, colSlate, colRaised, 0, "ACCEL");
+  paintText(kPanelX + 262, 208, 2, colSlate, colRaised, 0, "g");
+}
+
+void paintField(int x, int y, int w, int h, uint8_t font, uint16_t color, const char *text) {
+  tft.fillRect(x, y, w, h, colRaised);
+  paintText(x, y, font, color, colRaised, 0, text);
+}
+
+void placeTip(float deg, float want, int originX, int originY, int &x, int &y) {
+  const float rad = deg * 0.01745329252f;
+  const float dx = sinf(rad);
+  const float dy = -cosf(rad);
+  float len = want;
+  constexpr float kMargin = 8.0f;
+  if (dx > 0.02f) {
+    const float lim = (kPlotW - kMargin - originX) / dx;
+    if (lim < len) len = lim;
+  } else if (dx < -0.02f) {
+    const float lim = (kMargin - originX) / dx;
+    if (lim < len) len = lim;
+  }
+  if (dy > 0.02f) {
+    const float lim = (kPlotH - kMargin - originY) / dy;
+    if (lim < len) len = lim;
+  } else if (dy < -0.02f) {
+    const float lim = (kMargin - originY) / dy;
+    if (lim < len) len = lim;
+  }
+  if (len < 12.0f) len = 12.0f;
+  x = originX + static_cast<int>(lroundf(dx * len));
+  y = originY + static_cast<int>(lroundf(dy * len));
+}
+
+void renderClub(bool live, bool swinging) {
+  if (!plotReady) {
+    if (!live) {
+      paintText(kPlotX + 36, kPlotY + 92, 2, colMagenta, colPanel, 100, "NO GYRO");
     }
-  }
-
-  long sum = 0;
-  for (int i = 0; i < 4; ++i) {
-    sum += analogRead(kPressurePin);
-  }
-  pressureLevel = static_cast<int>(sum / 4);
-  const bool moved = pressureLevel > lastPrinted + 40 || pressureLevel < lastPrinted - 40;
-  if (moved && now - lastPressurePrintMs >= 200) {
-    lastPrinted = pressureLevel;
-    lastPressurePrintMs = now;
-    Serial.printf("pressure %d\n", pressureLevel);
-  }
-}
-
-void drawStatus(bool connected, bool haveLatest, const ImuSample &latest) {
-  if (!displayReady) {
     return;
   }
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println("HackUTD");
-  display.printf("BLE %s\n", connected ? "up" : "down");
-  if (!imuReady) {
-    display.println("IMU offline");
-  } else if (haveLatest) {
-    display.printf("P %6.1f\n", clubPitch);
-    display.printf("R %6.1f\n", clubRoll);
-    display.printf("Y %6.1f\n", clubYaw);
+  plot.fillSprite(colPanel);
+  const int ox = kPlotW / 2;
+  const int oy = kPlotH - 22;
+  if (!live) {
+    plot.setTextDatum(MC_DATUM);
+    plot.setTextFont(4);
+    plot.setTextColor(colMagenta, colPanel);
+    plot.setTextPadding(0);
+    plot.drawString("NO GYRO", ox, oy - 70);
+    plot.pushSprite(kPlotX, kPlotY);
+    return;
+  }
+
+  for (int deg = -60; deg <= 60; deg += 30) {
+    const float rad = deg * 0.01745329252f;
+    const float inner = deg == 0 ? 40.0f : 48.0f;
+    const float outer = 62.0f;
+    const int x0 = ox + static_cast<int>(lroundf(sinf(rad) * inner));
+    const int y0 = oy - static_cast<int>(lroundf(cosf(rad) * inner));
+    const int x1 = ox + static_cast<int>(lroundf(sinf(rad) * outer));
+    const int y1 = oy - static_cast<int>(lroundf(cosf(rad) * outer));
+    plot.drawLine(x0, y0, x1, y1, deg == 0 ? colCyan : colLine);
+  }
+
+  int ax = ox;
+  int ay = oy - 120;
+  placeTip(0, 132, ox, oy, ax, ay);
+  plot.drawWideLine(ox, oy, ax, ay, 2, colLine, colPanel);
+
+  int tx = ox;
+  int ty = oy - 120;
+  placeTip(viewPitch, 132, ox, oy, tx, ty);
+  const uint16_t shaft = swinging ? colViolet : colCyan;
+  plot.drawWideLine(ox, oy, tx, ty, 4, shaft, colPanel);
+
+  const float head = (viewPitch + viewRoll) * 0.01745329252f;
+  const float hx = cosf(head);
+  const float hy = sinf(head);
+  plot.drawWideLine(tx - hx * 8.0f, ty - hy * 8.0f, tx + hx * 24.0f, ty + hy * 24.0f, 5,
+                    colMist, colPanel);
+  plot.fillCircle(ox, oy, 6, shaft);
+  plot.fillCircle(ox, oy, 2, colPanel);
+  plot.pushSprite(kPlotX, kPlotY);
+}
+
+void paintAngle(int index, float value, bool ok, uint16_t color) {
+  char buf[12];
+  if (!ok) {
+    snprintf(buf, sizeof(buf), "--.-");
   } else {
-    display.println("IMU waiting");
+    snprintf(buf, sizeof(buf), "%+.1f", value);
   }
-  display.printf("P %4d\n", pressureLevel);
-  if (!pushPanel()) {
-    displayReady = false;
+  paintField(kPanelX + 132, 50 + index * 32, 150, 26, 4, ok ? color : colSlate, buf);
+}
+
+void paintAxes(int y, bool ok, const char *fmt, float x, float yy, float z) {
+  const int cols[] = {kPanelX + 12, kPanelX + 108, kPanelX + 204};
+  const char *names[] = {"X", "Y", "Z"};
+  const float values[] = {x, yy, z};
+  for (int i = 0; i < 3; ++i) {
+    char buf[16];
+    if (!ok) {
+      snprintf(buf, sizeof(buf), "%s --", names[i]);
+    } else {
+      char num[12];
+      snprintf(num, sizeof(num), fmt, values[i]);
+      snprintf(buf, sizeof(buf), "%s %s", names[i], num);
+    }
+    paintField(cols[i], y, 88, 16, 2, ok ? colMist : colSlate, buf);
   }
+}
+
+void paintLive(bool connected, bool haveLatest, const ImuSample &sample) {
+  const bool live = imuReady && haveLatest;
+  float gmag = 0;
+  if (live) {
+    gmag = sqrtf(sample.gx * sample.gx + sample.gy * sample.gy + sample.gz * sample.gz);
+    viewPitch += (clubPitch - viewPitch) * 0.45f;
+    viewRoll += (clubRoll - viewRoll) * 0.45f;
+  }
+  const bool swinging = live && gmag >= 35.0f;
+
+  const char *state = "HOLD";
+  const char *hint = "Hold the club still at address";
+  uint16_t stateColor = colSlate;
+  if (!live) {
+    state = "NO CLUB";
+    hint = "I2C socket   SDA 32   SCL 25";
+    stateColor = colMagenta;
+  } else if (swinging) {
+    state = "SWING";
+    hint = "In the swing";
+    stateColor = colViolet;
+  } else if (holdingStill && addressLocked) {
+    state = "ADDRESS";
+    hint = "Address set. This is zero.";
+    stateColor = colCyan;
+  } else if (addressLocked) {
+    state = "READY";
+    hint = "Swing when you are ready";
+    stateColor = colMist;
+  }
+
+  tft.fillCircle(206, 22, 4, stateColor);
+  paintText(218, 14, 2, stateColor, colInk, 150, state);
+  tft.fillCircle(458, 22, 5, connected ? colCyan : colSlate);
+
+  renderClub(live, swinging);
+  paintAngle(0, clubPitch, live, colCyan);
+  paintAngle(1, clubRoll, live, colMist);
+  paintAngle(2, clubYaw, live, colMist);
+  paintAxes(178, live, "%+.0f", sample.gx, sample.gy, sample.gz);
+  paintAxes(228, live, "%+.2f", sample.ax, sample.ay, sample.az);
+  paintText(16, 284, 2, colSlate, colInk, 450, hint);
 }
 
 void startBle() {
@@ -554,29 +651,26 @@ void startBle() {
 
 void setup() {
   Serial.begin(115200);
-  pinMode(kButtonPin, INPUT_PULLUP);
-  pinMode(kPressurePin, INPUT);
-  pinMode(kBuzzerPin, OUTPUT);
-  digitalWrite(kBuzzerPin, LOW);
-  attachInterrupt(digitalPinToInterrupt(kButtonPin), onButton, CHANGE);
-  analogSetPinAttenuation(kPressurePin, ADC_11db);
-  delay(50);
-  buttonIdleHigh = digitalRead(kButtonPin) == HIGH;
-  pressureLevel = analogRead(kPressurePin);
-  Serial.printf("inputs idle  button=%s pressure=%d\n",
-                buttonIdleHigh ? "high" : "low", pressureLevel);
+  delay(200);
+  Serial.println("GolfAR club display");
 
-  Wire.begin(kSdaPin, kSclPin);
-  Wire.setClock(kI2cHz);
-  scanI2c();
-  imuReady = beginMpu();
+  tft.init();
+  tft.setRotation(1);
+  tft.setTextWrap(false);
+  loadPalette();
+  plot.setColorDepth(16);
+  plotReady = plot.createSprite(kPlotW, kPlotH) != nullptr;
+  if (!plotReady) {
+    Serial.println("club graphic skipped, not enough RAM");
+  }
+
+  imuReady = probeMpu();
   if (!imuReady) {
     Serial.println("IMU not found yet. BLE will still advertise.");
   }
 
-  displayReady = beginDisplay();
-  Serial.println(displayReady ? "OLED ready" : "OLED not found at 0x3C or 0x3D");
-
+  drawChrome();
+  paintLive(false, false, ImuSample{});
   startBle();
 }
 
@@ -585,7 +679,6 @@ void loop() {
   static uint32_t lastLogMs = 0;
   static uint32_t lastDisplayMs = 0;
   static uint32_t lastImuRetryMs = 0;
-  static uint32_t lastDisplayRetryMs = 0;
   static bool wasConnected = false;
   static ImuSample latest = {};
   static bool haveLatest = false;
@@ -605,18 +698,9 @@ void loop() {
   wasConnected = connected;
 
   const uint32_t now = millis();
-  updateVibration(now);
   if (!imuReady && now - lastImuRetryMs >= 2000) {
     lastImuRetryMs = now;
-    imuReady = beginMpu();
-  }
-
-  if (!displayReady && now - lastDisplayRetryMs >= 2000) {
-    lastDisplayRetryMs = now;
-    displayReady = beginDisplay();
-    if (displayReady) {
-      Serial.printf("OLED ready at 0x%02X\n", oledAddr);
-    }
+    imuReady = probeMpu();
   }
 
   if (imuReady && now - lastSampleMs >= kSamplePeriodMs) {
@@ -631,26 +715,27 @@ void loop() {
       }
     } else {
       imuReady = false;
+      haveLatest = false;
       Serial.println("IMU read failed");
     }
   }
 
   flushTx();
 
-  if (displayReady && now - lastDisplayMs >= kDisplayPeriodMs) {
+  if (now - lastDisplayMs >= kDisplayPeriodMs) {
     lastDisplayMs = now;
-    drawStatus(connected, haveLatest, latest);
+    paintLive(connected, haveLatest, latest);
   }
 
   if (now - lastLogMs >= kLogPeriodMs) {
     lastLogMs = now;
     if (haveLatest) {
       Serial.printf(
-          "ble %s seq=%u drops=%lu  angle %6.1f %6.1f %6.1f  btn=%d pressure=%d vib=%d\n",
-          connected ? "up" : "down", sequence,
-          static_cast<unsigned long>(droppedFrames), clubPitch, clubRoll,
-          clubYaw, digitalRead(kButtonPin), pressureLevel,
-          vibrationOn ? 1 : 0);
+          "ble %s seq=%u drops=%lu  a %6.2f %6.2f %6.2f  g %6.1f %6.1f %6.1f  "
+          "angle %6.1f %6.1f %6.1f\n",
+          connected ? "up" : "down", sequence, static_cast<unsigned long>(droppedFrames),
+          latest.ax, latest.ay, latest.az, latest.gx, latest.gy, latest.gz, clubPitch,
+          clubRoll, clubYaw);
     } else {
       Serial.printf("ble %s, imu offline\n", connected ? "up" : "down");
     }
