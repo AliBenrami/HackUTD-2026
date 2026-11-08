@@ -1,8 +1,8 @@
 # AR PoC — native optical AR on VITURE Luma Ultra
 
-Single Python + Panda3D application that renders world-locked wireframe
-geometry on the VITURE Luma Ultra's physical display, anchored by the
-onboard Carina 6DoF head pose. No virtual monitors, no desktop capture,
+Single Python + Panda3D application that renders marker-anchored miniature
+golf (or calibration wireframes) on the VITURE Luma Ultra's physical display.
+The Carina 6DoF head pose moves the camera. No virtual monitors or desktop capture,
 no video passthrough in the default path: one fullscreen window on the
 glasses output, pure-black clear (invisible on the additive combiner),
 only virtual geometry emits light.
@@ -15,7 +15,7 @@ VITURE Luma Ultra
                                         (background poll thread, 120 Hz,
                                          immutable snapshots + lock)
   DP  -> Hyprland output DP-1 -> fullscreen Panda3D window
-                                   persist world (cube/octa/pyramid)
+                                    persistent table / golf scene
                                    per-frame: pose -> look_at camera
 ```
 
@@ -56,15 +56,12 @@ the panel FOV simply wait until you look at them.
 nix develop
 uv sync
 
-# one-time USB permissions, then replug the glasses:
-sudo cp etc/70-viture.rules /etc/udev/rules.d/70-viture.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
+# NixOS: configure services.udev.extraRules, rebuild and replug.
+# See HANDOFF.md for this machine's pending rebuild failure.
 ```
 
-Immutable rootfs (this machine): `/etc` is read-only, so per session,
-as root: `chmod 666 /dev/bus/usb/<bus>/<dev>` for the `35ca:1104`
-glasses and `0c45:636b` camera nodes (re-enumeration changes devnums;
-re-apply after replug). The proprietary SDK is resolved from
+The checked-in `etc/70-viture.rules` is a reference for mutable systems;
+NixOS uses `/etc/nixos/viture.nix` instead. The proprietary SDK is resolved from
 `$VITURE_SDK_LIB`, defaulting to the reference checkout's unpacked
 blobs (never vendored).
 
@@ -298,7 +295,7 @@ fallback), **H** hand tracker on/off. Desktop sim: mouse = pointer,
   confidence, `hover` state, pointer indicator). Confirming a full
   grab-move-release with your own hand is the remaining live step.
 
-## Tabletop AR (--table to enable)
+## Tabletop AR (automatic for golf/gallery; `--table` for calibration scene)
 
 Virtual objects sit on the real physical table and stay put while you
 move. A printed ArUco marker (default DICT_6X6_250 id 42, 100 mm)
@@ -333,16 +330,12 @@ assumes the viture provider).
 `scripts/make_table_target.py` prints the marker at exact millimetre
 size (+ JSON sidecar) and a checkerboard for intrinsics calibration.
 
-Measured (synthetic + live, 2026-11-07):
+Verification history and current status (see [HANDOFF.md](HANDOFF.md) for
+the current handoff and live acceptance steps):
 
-* 76 unit tests pass (`PYTHONPATH=src uv run python -m unittest
-  discover -s tests`): IPPE exact/noisy recovery, corner-order
-  validation, hand-eye synthetic recovery (0.0 deg / 0.0 mm, exact
-  data), degenerate-motion rejection, gravity/distance/gating,
-  acquisition lock, no-jump/snap/relock, origin-reset carry,
-  jump-detector LOST, DEGRADED/LOST timeouts, TimeSync, pose
-  interpolation incl. slerp, contact heights, plane bounds, cal-file
-  roundtrip, detector on synthetic frames.
+* 84 tests passed at the latest handoff (`PYTHONPATH=src uv run python -m
+  unittest discover -s tests`), covering pose conversion, hand input,
+  anchor/calibrator/detector behavior and real downloaded golf assets.
 * Live: glasses camera streams 1920x1080@30 MJPEG; **device
   timestamps are always 0 in this SDK build**, so TimeSync runs on the
   arrival-time fallback path by design (verified working). Detector
@@ -352,11 +345,11 @@ Measured (synthetic + live, 2026-11-07):
   run render cleanly for thousands of frames. Full `--table` app on
   the glasses (DP-1, 6DoF locked, camera + detector + tracker live):
   healthy, anchor correctly UNINITIALIZED with no marker in view.
-* NOT yet live-verified: marker scan -> APPROX lock, hand-eye solve on
-  real data, object stability while walking, save/restore across
-  sessions. Blocked on physics: the glasses lie facing across the
-  desk, and the marker must be placed in their view (or the glasses
-  picked up) -- needs hands.
+* A later user run **did** acquire an APPROX anchor and reported much
+  better table behavior after state-machine repairs. It also exposed
+  `reject-inconsistent` floods and DEGRADED recovery gaps that were then
+  addressed in code. This is not a measurement of tabletop accuracy, and
+  there has been **no live walk-around acceptance for the new golf scene**.
 
 Acceptance (needs printed marker + glasses free):
 

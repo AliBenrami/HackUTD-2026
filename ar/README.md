@@ -1,20 +1,21 @@
 # Viture Luma Ultra AR PoC (Python + Panda3D)
 
-Native optical AR for the **VITURE Luma Ultra** XR glasses: world-locked
-wireframe geometry on the physical glasses display, anchored by the
-onboard Carina 6DoF head pose. No virtual monitors, no desktop capture,
+Native optical AR for the **VITURE Luma Ultra** XR glasses: a miniature
+golf scene on a marker-anchored physical tabletop, viewed with Carina 6DoF
+head tracking. No virtual monitors, no desktop capture,
 no video passthrough in the default path — one fullscreen window on
 the glasses output, pure-black clear (invisible on the additive
 combiner), only virtual geometry emits light.
 
-See [AR_POC.md](AR_POC.md) for the architecture, setup, launch,
-render modes, recentering, diagnostics, and known limitations.
+Start with [HANDOFF.md](HANDOFF.md) if taking over this work. See
+[AR_POC.md](AR_POC.md) for tracking and optics, and [ASSETS.md](ASSETS.md)
+for model provenance and layout.
 
 ## Layout
 
 ```
 flake.nix            # dev environment (Python 3.12 + uv + system libs)
-pyproject.toml       # uv package management (panda3d + pillow)
+pyproject.toml       # uv dependencies (Panda3D, glTF loader, etc.)
 .python-version      # 3.12
 src/
   ar_poc.py          # the PoC: window, regions/cameras, render loop
@@ -24,10 +25,12 @@ src/
   ar_scene.py        # calibration scene and marker-aligned table outline
   video_bg.py        # legacy world-locked video panel (opt-in via --video-panel)
 tests/
-  test_pose_math.py  # conversion unit tests (unittest, no window/hardware)
+  test_pose_math.py  # conversion tests; see also test_tabletop/test_golf_assets
 etc/
   70-viture.rules    # udev rules so the SDK can claim USB without root
-AR_POC.md             # full PoC documentation
+HANDOFF.md            # current state, architecture and verification handoff
+AR_POC.md             # tracking, optics and early PoC history
+ASSETS.md             # model catalog, licenses, size and layout
 ```
 
 The proprietary **VITURE SDK is not vendored** (same policy as the
@@ -42,16 +45,14 @@ defaults it to the reference checkout's unpacked blobs.
 nix develop
 uv sync
 
-# one-time USB permissions, then replug the glasses:
-sudo cp etc/70-viture.rules /etc/udev/rules.d/70-viture.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
+# On NixOS, add USB rules via services.udev.extraRules in the system config,
+# then sudo nixos-rebuild switch and replug. See HANDOFF.md for this machine.
 ```
 
-> Immutable rootfs (this machine): `/etc` is read-only, so install the
-> rule per session instead — as root:
-> `chmod 666 /dev/bus/usb/<bus>/<dev>` for the `35ca:1104` glasses and
-> `0c45:636b` camera nodes (devnums change on re-enumeration; the
-> self-test reports `USB_UNAVAILABLE` / `-2` without it).
+`etc/70-viture.rules` is a sample for mutable udev setups. On this NixOS
+machine, `/etc/nixos/viture.nix` is imported but its newest USB permission
+change has **not** been activated: a system rebuild failed on an unrelated
+VS Code package. See [HANDOFF.md](HANDOFF.md#verification-and-outstanding-issues).
 
 ## Run
 
@@ -81,5 +82,3 @@ Controls: **R** recentre · **D** debug overlay (lens readout included) ·
 **F** fade toggle ([ ] width, - = strength) ·
 **M** manipulate · **V** stage/object · **B** cycle object · **U** undo ·
 **X** reset stage · **G** pinch · **H** hand tracking · **Esc/Q** quit.
-Fullscreen auto-targets the VITURE output (override with
-`--monitor NAME` or `--win-origin X,Y`; `--no-place` skips auto-move).

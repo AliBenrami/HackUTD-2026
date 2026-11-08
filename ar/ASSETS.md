@@ -84,8 +84,10 @@ edge-fade shader reports a GLSL compilation warning on this machine; the
 course itself still renders in desktop mono mode. Physical alignment, correct
 *glasses* multi-angle display and world lock **still need a live user check**.
 The hardware self-test found the headset (product ID `0x1104`) but failed to
-open its USB device for writing (`Permission denied`); no live rendering or
-anchor check was possible.
+open its USB device for writing (`Permission denied`); no live golf rendering
+or anchor check was possible. A persistent NixOS rule change has been written
+outside this repository but **not activated**, because `nixos-rebuild switch`
+failed on an unrelated VS Code package; see [HANDOFF.md](HANDOFF.md).
 
 Live check: ensure VITURE device permissions (`uv run python src/ar_poc.py
 --self-test`), then run the default scene with the ArUco marker visible.
@@ -94,5 +96,6 @@ and rocks from both sides, look away and back, use stage controls if needed,
 and verify black regions reveal the real tabletop. Use `D`/`N` for debug
 overlay and marker-aligned outline. Do not infer physical accuracy from the
 desktop preview. If the self-test reports `/dev/bus/usb/... Permission denied`,
-install the repository's `etc/70-viture.rules` using your normal NixOS udev
-configuration and replug the glasses before retrying.
+activate appropriate NixOS `services.udev.extraRules` through a successful
+system rebuild, then replug the glasses before retrying. The checked-in
+`etc/70-viture.rules` is a reference, not a mutable NixOS `/etc` install step.
