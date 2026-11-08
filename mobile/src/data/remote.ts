@@ -11,7 +11,9 @@ import type {
   Units,
 } from '../domain/types';
 import { defaultPreferences, simulatedDevice } from '../services/ar/bridge';
+import { randomUUID } from '../lib/id';
 import { supabase } from '../lib/supabase';
+import { swingVideoFile } from './videoFile';
 import type { HoleDraft, Snapshot } from './repository';
 
 const BUCKET = 'swing-videos';
@@ -33,6 +35,11 @@ type PreferenceRow = {
 
 function requireUser(session: Session) {
   return session.user;
+}
+
+function failure(error: { message?: string } | null, fallback: string): Error | null {
+  if (!error) return null;
+  return new Error(error.message || fallback);
 }
 
 function holeFacts(courseId: string, teeSetId: string, holeNumber: number) {
@@ -74,7 +81,7 @@ async function ensureSampleRounds(userId: string) {
   if ((existing.count ?? 0) > 0) return;
 
   for (const draft of buildSampleRounds()) {
-    const roundId = crypto.randomUUID();
+    const roundId = randomUUID();
     const inserted = await supabase.from('rounds').insert({
       id: roundId,
       user_id: userId,
@@ -108,7 +115,7 @@ export async function loadRemoteSnapshot(session: Session): Promise<Snapshot> {
   await ensureSampleRounds(user.id);
 
   const [profile, preferences, rounds, scores, videos, swings, recent] = await Promise.all([
-    supabase.from('profiles').select('id, display_name, created_at').eq('id', user.id).single(),
+    supabase.from('profiles').select('id, display_name, created_at').eq('id', user.id).maybeSingle(),
     supabase.from('preferences').select('*').eq('user_id', user.id).maybeSingle(),
     supabase.from('rounds').select('*').order('started_at', { ascending: false }),
     supabase.from('hole_scores').select('*').order('hole_number', { ascending: true }),
@@ -118,9 +125,17 @@ export async function loadRemoteSnapshot(session: Session): Promise<Snapshot> {
   ]);
 
   for (const result of [profile, preferences, rounds, scores, videos, swings, recent]) {
-    if (result.error) throw result.error;
+    const error = failure(result.error, 'The saved rounds could not be read.');
+    if (error) throw error;
   }
-  if (!profile.data) throw new Error('Your profile could not be opened.');
+  const profileRow = profile.data ?? {
+    id: user.id,
+    display_name:
+      typeof user.user_metadata.display_name === 'string' && user.user_metadata.display_name.trim()
+        ? user.user_metadata.display_name
+        : 'You',
+    created_at: user.created_at,
+  };
 
   const scoreRows = scores.data ?? [];
   const scoreMap: Record<string, HoleScore[]> = {};
@@ -171,9 +186,9 @@ export async function loadRemoteSnapshot(session: Session): Promise<Snapshot> {
 
   return {
     player: {
-      id: profile.data.id,
-      name: profile.data.display_name,
-      createdAt: profile.data.created_at,
+      id: profileRow.id,
+      name: profileRow.display_name,
+      createdAt: profileRow.created_at,
     },
     rounds: roundRows.map((round) => {
       const course = getCourse(round.course_id);
@@ -258,7 +273,7 @@ export async function startRemoteRound(input: {
   const tee = course ? getTee(course, input.teeSetId) : undefined;
   if (!tee) throw new Error('That tee is not on this course.');
   const holes = holesForNine(tee, input.nine);
-  const roundId = crypto.randomUUID();
+  const roundId = randomUUID();
   const inserted = await supabase.from('rounds').insert({
     id: roundId,
     user_id: userData.user.id,
@@ -340,13 +355,15 @@ export async function recordRemoteSwing(input: { source: 'camera' | 'import'; vi
   const { data: userData, error: userError } = await supabase.auth.getUser();
   if (userError || !userData.user) throw userError ?? new Error('Sign in again.');
   const response = await fetch(input.videoUri);
-  const body = await response.blob();
-  const type = body.type || 'video/mp4';
-  const ext = type.includes('webm') ? 'webm' : type.includes('quicktime') ? 'mov' : 'mp4';
-  const videoId = crypto.randomUUID();
-  const path = `${userData.user.id}/${videoId}.${ext}`;
-  const uploaded = await supabase.storage.from(BUCKET).upload(path, body, { contentType: type });
-  if (uploaded.error) throw uploaded.error;
+  if (!response.ok) throw new Error('The recording could not be read.');
+  const bytes = await response.arrayBuffer();
+  if (bytes.byteLength === 0) throw new Error('The recording was empty.');
+  const file = swingVideoFile(input.videoUri, response.headers.get('content-type'));
+  const videoId = randomUUID();
+  const path = `${userData.user.id}/${videoId}.${file.ext}`;
+  const uploaded = await supabase.storage.from(BUCKET).upload(path, bytes, { contentType: file.type });
+  const uploadError = failure(uploaded.error, 'The recording could not be uploaded.');
+  if (uploadError) throw uploadError;
   const video = await supabase.from('swing_videos').insert({
     id: videoId,
     user_id: userData.user.id,
@@ -354,13 +371,15 @@ export async function recordRemoteSwing(input: { source: 'camera' | 'import'; vi
     source: input.source,
     storage_path: path,
   });
-  if (video.error) throw video.error;
+  const videoError = failure(video.error, 'The recording could not be saved.');
+  if (videoError) throw videoError;
   const swing = await supabase.from('swings').insert({
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     video_id: videoId,
     position: 1,
   });
-  if (swing.error) throw swing.error;
+  const swingError = failure(swing.error, 'The recording could not be saved.');
+  if (swingError) throw swingError;
   return { videoId };
 }
 

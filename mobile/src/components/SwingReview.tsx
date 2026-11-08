@@ -2,9 +2,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Link, router } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, View, type ScrollViewInstance } from 'react-native';
+import { Image, Platform, Pressable, ScrollView, StyleSheet, View, type ScrollViewInstance } from 'react-native';
 import Svg, { Circle, Line, Rect } from 'react-native-svg';
 import { ballTraces } from '../data/ballTrace';
+import { phoneCanPlayVideo } from '../data/videoFile';
 import { swingClip, swingFrames } from '../data/swingFrames';
 import { SCORE_CUTOFF, swingReview, type ReviewedSwing } from '../data/swingReview';
 import { SWING_FPS, swingTrack } from '../data/swingTrack';
@@ -601,7 +602,7 @@ function SavedSwing({
     refreshed.current = true;
     onAnalyze();
   }, [onAnalyze, phaseModel, swing.videoUri]);
-  if (measurement?.status === 'ready' && swing.videoUri) {
+  if (measurement?.status === 'ready' && swing.videoUri && phoneCanPlayVideo(swing.videoUri, Platform.OS)) {
     return (
       <View>
         <SimilarNote videoId={swing.videoId} events={measurement.measured.swings[0]?.events ?? null} />
@@ -680,7 +681,8 @@ function PlainSavedSwing({
   heading: ReactNode;
 }) {
   const [playing, setPlaying] = useState(false);
-  const player = useVideoPlayer(swing.videoUri, (instance) => {
+  const playable = phoneCanPlayVideo(swing.videoUri, Platform.OS);
+  const player = useVideoPlayer(playable ? swing.videoUri : null, (instance) => {
     instance.pause();
   });
 
@@ -713,12 +715,20 @@ function PlainSavedSwing({
   return (
     <View className="mt-4">
       <View style={styles.stage}>
-        <VideoView player={player} style={styles.savedVideo} contentFit="contain" nativeControls={false} playsInline />
+        {playable ? (
+          <VideoView player={player} style={styles.savedVideo} contentFit="contain" nativeControls={false} playsInline />
+        ) : (
+          <View style={styles.savedVideo} className="items-center justify-center px-6">
+            <AppText className="text-center text-sm text-slate">This recording is WebM, which this phone cannot play. Record the swing again on the phone.</AppText>
+          </View>
+        )}
+        {playable ? (
         <Pressable accessibilityRole="button" accessibilityLabel={playing ? 'Pause' : 'Play'} onPress={togglePlay} style={styles.play}>
           <AppText weight="semibold" className="text-sm">
             {playing ? 'Pause' : 'Play'}
           </AppText>
         </Pressable>
+        ) : null}
       </View>
       {heading}
       <AppText className="mt-3 text-sm text-slate">
