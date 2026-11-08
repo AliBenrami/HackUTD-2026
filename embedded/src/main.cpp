@@ -378,9 +378,19 @@ void setBuzzer(bool on) {
 }
 
 void updateVibration(uint32_t now) {
+  static int rawLevel = HIGH;
+  static int stableLevel = HIGH;
+  static uint32_t rawSinceMs = 0;
   static int lastPrinted = -10000;
   static uint32_t lastPressurePrintMs = 0;
-  setBuzzer(digitalRead(kButtonPin) == LOW);
+  const int buttonLevel = digitalRead(kButtonPin);
+  if (buttonLevel != rawLevel) {
+    rawLevel = buttonLevel;
+    rawSinceMs = now;
+  } else if (buttonLevel != stableLevel && now - rawSinceMs >= 25) {
+    stableLevel = buttonLevel;
+    setBuzzer(stableLevel == LOW);
+  }
 
   long sum = 0;
   for (int i = 0; i < 4; ++i) {
