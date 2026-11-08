@@ -1,0 +1,8 @@
+<linker>
+  <assembly fullname="Assembly-CSharp">
+    <type fullname="GolfAR.CourseLayout" preserve="all" />
+    <type fullname="GolfAR.CourseLayout/HeightField" preserve="all" />
+    <type fullname="GolfAR.CourseLayout/Feature" preserve="all" />
+    <type fullname="GolfAR.PhysicalObstacles/Obstacle" preserve="all" />
+  </assembly>
+</linker>

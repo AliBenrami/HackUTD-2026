@@ -33,3 +33,7 @@ Unit tests for scoring and the sample course data:
 cd mobile
 npm test
 ```
+
+## Quest tabletop prototype
+
+The arcade tabletop course has a separate VR-first Unity project for Quest 2. It also supports grayscale passthrough, manual table placement, and local spatial anchors. [Open, build, and run the Unity prototype](ar-unity/README.md).
