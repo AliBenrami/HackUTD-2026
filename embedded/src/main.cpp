@@ -23,7 +23,7 @@ constexpr int kSclPin = 9;
 constexpr int kScreenWidth = 128;
 constexpr int kScreenHeight = 64;
 // Button module S goes to GPIO 4. Pressure-module S goes to GPIO 5.
-// Buzzer on GPIO 18. It sounds only while the button is held.
+// Buzzer on GPIO 18. Press the button and it sounds. Let go and it stops.
 constexpr int kButtonPin = 4;
 constexpr int kPressurePin = 5;
 constexpr int kBuzzerPin = 18;
@@ -360,47 +360,16 @@ bool beginDisplay() {
   return pushPanel();
 }
 
-constexpr uint16_t kBeepHz = 2000;
-
-void silenceBuzzer() { ledcWrite(kBuzzerPin, 0); }
-
-void setBuzzer(bool on) {
-  if (on == vibrationOn) {
-    return;
-  }
-  vibrationOn = on;
-  if (on) {
-    ledcWriteTone(kBuzzerPin, kBeepHz);
-    Serial.println("beep");
-  } else {
-    silenceBuzzer();
-  }
-}
-
 void updateVibration(uint32_t now) {
-  static int lastButton = HIGH;
-  static uint32_t lastPressMs = 0;
-  static uint32_t releasedSinceMs = 0;
   static int lastPrinted = -10000;
   static uint32_t lastPressurePrintMs = 0;
-  const int buttonLevel = digitalRead(kButtonPin);
-  if (buttonLevel == LOW) {
-    releasedSinceMs = now;
-    if (lastButton != LOW && now - lastPressMs >= 40) {
-      setBuzzer(true);
-      lastPressMs = now;
+  const bool pressed = digitalRead(kButtonPin) == LOW;
+  digitalWrite(kBuzzerPin, pressed ? HIGH : LOW);
+  if (pressed != vibrationOn) {
+    vibrationOn = pressed;
+    if (pressed) {
+      Serial.println("beep");
     }
-    lastButton = LOW;
-  } else if (vibrationOn) {
-    if (lastButton == LOW) {
-      releasedSinceMs = now;
-    }
-    lastButton = HIGH;
-    if (now - releasedSinceMs >= 15) {
-      setBuzzer(false);
-    }
-  } else {
-    lastButton = HIGH;
   }
 
   long sum = 0;
@@ -466,8 +435,7 @@ void setup() {
   pinMode(kButtonPin, INPUT_PULLUP);
   pinMode(kPressurePin, INPUT);
   pinMode(kBuzzerPin, OUTPUT);
-  ledcAttach(kBuzzerPin, 2000, 8);
-  silenceBuzzer();
+  digitalWrite(kBuzzerPin, LOW);
   analogSetPinAttenuation(kPressurePin, ADC_11db);
   delay(50);
   buttonIdleHigh = digitalRead(kButtonPin) == HIGH;
