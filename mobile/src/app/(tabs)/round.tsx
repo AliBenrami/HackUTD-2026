@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Alert, Pressable, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSequence, withTiming } from 'react-native-reanimated';
 import { HoleRail } from '../../components/HoleRail';
-import { HoleTools, type HoleDraft } from '../../components/HoleTools';
+import { HoleTools, type HoleDraft, type HoleToolsHandle } from '../../components/HoleTools';
 import { TopoMap } from '../../components/TopoMap';
 import { holeDrawing } from '../../data/courseMaps';
 import { getCourse } from '../../data/courses';
@@ -98,15 +98,17 @@ function ActiveRound({
   const { userId, bag, notes, saveHoleNote, preferences } = useGolf();
   const reduced = useReducedMotion();
   const tools = useRef<HoleDraft>({ miss: null, gir: null, pin: 'middle', shots: [], club: null, cardId: null });
-  const onTools = useCallback((draft: HoleDraft) => {
-    tools.current = draft;
-  }, []);
+  const toolsHandle = useRef<HoleToolsHandle>(null);
   const savedNote = notes.find((note) => note.roundId === roundId && note.holeNumber === hole.holeNumber) ?? null;
   const mapped = holeDrawing(courseId, hole.holeNumber, teeName);
   const catalogHole = getCourse(courseId)
     ?.teeSets.find((tee) => tee.name === teeName)
     ?.holes.find((item) => item.number === hole.holeNumber);
-  const [strokes, setStrokes] = useState(hole.strokes ?? hole.par);
+  const [strokes, setStrokes] = useState(mapped ? (savedNote?.shots.length ?? 0) : (hole.strokes ?? hole.par));
+  const onTools = useCallback((draft: HoleDraft) => {
+    tools.current = draft;
+    if (mapped) setStrokes(draft.shots.length);
+  }, [mapped]);
   const [putts, setPutts] = useState<number | null>(hole.putts);
   const [penalties, setPenalties] = useState<number | null>(hole.penalties);
   const [fairway, setFairway] = useState<boolean | null>(hole.fairwayHit);
@@ -120,6 +122,11 @@ function ActiveRound({
     const timer = setTimeout(() => setFlash(null), 1600);
     return () => clearTimeout(timer);
   }, [flash]);
+
+  useEffect(() => {
+    if (putts != null && putts > strokes) setPutts(strokes === 0 ? null : strokes);
+    if (penalties != null && penalties > strokes) setPenalties(strokes === 0 ? null : strokes);
+  }, [penalties, putts, strokes]);
 
   useEffect(() => {
     if (skipPulse.current) {
@@ -138,7 +145,7 @@ function ActiveRound({
   const index = numbers.indexOf(hole.holeNumber);
   const previous = index > 0 ? numbers[index - 1] : null;
   const next = index < numbers.length - 1 ? numbers[index + 1] : null;
-  const baseline = hole.strokes ?? hole.par;
+  const baseline = mapped ? (savedNote?.shots.length ?? 0) : (hole.strokes ?? hole.par);
   const dirty =
     strokes !== baseline ||
     putts !== hole.putts ||
@@ -201,8 +208,9 @@ function ActiveRound({
   }
 
   function goTo(holeNumber: number) {
+    const freshScore = mapped ? strokes === 0 : strokes === hole.par;
     const untouched =
-      !hole.completed && strokes === hole.par && putts == null && penalties == null && fairway == null;
+      !hole.completed && freshScore && putts == null && penalties == null && fairway == null;
     if (!dirty || untouched) {
       void onFocus(holeNumber);
       return;
@@ -287,9 +295,13 @@ function ActiveRound({
       <View className="mt-6 flex-row items-center justify-between">
         <IconButton
           label="Remove stroke"
-          disabled={strokes <= 1}
+          disabled={mapped ? strokes <= 0 : strokes <= 1}
           onPress={() => {
             hapticSelect();
+            if (mapped) {
+              toolsHandle.current?.removeStroke();
+              return;
+            }
             setStrokes((value) => Math.max(1, value - 1));
           }}
         >
@@ -308,6 +320,10 @@ function ActiveRound({
           disabled={strokes >= 15}
           onPress={() => {
             hapticSelect();
+            if (mapped) {
+              toolsHandle.current?.addStroke();
+              return;
+            }
             setStrokes((value) => Math.min(15, value + 1));
           }}
         >
@@ -316,11 +332,13 @@ function ActiveRound({
       </View>
 
       <View className="mt-4 items-center">
-        <View className="rounded-full border border-white/10 px-4 py-2">
-          <AppText weight="medium" style={{ color: resultTone(result.delta) }}>
-            {result.label} · {result.plain}
-          </AppText>
-        </View>
+        {strokes > 0 ? (
+          <View className="rounded-full border border-white/10 px-4 py-2">
+            <AppText weight="medium" style={{ color: resultTone(result.delta) }}>
+              {result.label} · {result.plain}
+            </AppText>
+          </View>
+        ) : null}
         <AppText className="mt-3 text-center text-sm text-slate">
           {relative
             ? `${relative.symbol} · ${relative.words} through ${stats.completedHoles} saved ${
@@ -334,6 +352,7 @@ function ActiveRound({
       </View>
 
       <HoleTools
+        ref={toolsHandle}
         userId={userId}
         roundId={roundId}
         courseId={courseId}

@@ -59,6 +59,42 @@ export function holeBearing(tee: MapPoint, green: MapPoint): number {
   return (degrees + 360) % 360;
 }
 
+export type MapRegion = {
+  latitude: number;
+  longitude: number;
+  latitudeDelta: number;
+  longitudeDelta: number;
+};
+
+export function regionFor(points: MapPoint[]): MapRegion {
+  const finite = points.filter((point) => Number.isFinite(point.lng) && Number.isFinite(point.lat));
+  if (finite.length === 0) {
+    return { latitude: 0, longitude: 0, latitudeDelta: 0.02, longitudeDelta: 0.02 };
+  }
+  const lats = finite.map((point) => point.lat);
+  const lngs = finite.map((point) => point.lng);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  const latitude = (minLat + maxLat) / 2;
+  const longitude = (minLng + maxLng) / 2;
+  const latSpan = Math.max(maxLat - minLat, 0.0022);
+  const lngSpan = Math.max(maxLng - minLng, 0.0022);
+  const cos = Math.cos((latitude * Math.PI) / 180) || 1;
+  let latitudeDelta = latSpan * 1.7;
+  let longitudeDelta = lngSpan * 1.7;
+  const lngAsLat = longitudeDelta * cos;
+  if (lngAsLat < latitudeDelta * 0.62) longitudeDelta = (latitudeDelta * 0.62) / cos;
+  if (latitudeDelta < lngAsLat * 0.72) latitudeDelta = lngAsLat * 0.72;
+  return { latitude, longitude, latitudeDelta, longitudeDelta };
+}
+
+export function shotPath(tee: MapPoint, shots: MapPoint[]): MapPoint[] {
+  const marks = shots.filter((shot) => Number.isFinite(shot.lng) && Number.isFinite(shot.lat));
+  return marks.length ? [tee, ...marks] : [];
+}
+
 export type HoleFrame = {
   viewBox: string;
   width: number;

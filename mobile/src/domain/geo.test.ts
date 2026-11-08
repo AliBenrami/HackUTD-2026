@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { frameHole, fromPlane, guessLanding, placeShot, toPlane, yardsBetween } from './geo';
+import { frameHole, fromPlane, guessLanding, placeShot, regionFor, shotPath, toPlane, yardsBetween } from './geo';
 
 const tee = { lng: -96.75, lat: 32.99 };
 const green = { lng: -96.75, lat: 32.9936 };
@@ -57,6 +57,19 @@ describe('hole geometry', () => {
     expect(generic.source).toBe('generic');
     expect(yardsBetween(tee, generic.point)).toBeGreaterThan(150);
     expect(yardsBetween(tee, generic.point)).toBeLessThan(230);
+  });
+
+  it('frames a long hole with ground on both sides', () => {
+    const region = regionFor([tee, green]);
+    expect(region.latitude).toBeCloseTo((tee.lat + green.lat) / 2, 5);
+    expect(region.longitude).toBeCloseTo(tee.lng, 5);
+    expect(region.latitudeDelta).toBeGreaterThan(green.lat - tee.lat);
+    expect(region.longitudeDelta).toBeGreaterThan(0.002);
+  });
+
+  it('starts the shot path at the tee', () => {
+    expect(shotPath(tee, [])).toEqual([]);
+    expect(shotPath(tee, [{ lng: -96.75, lat: 32.991 }])).toEqual([tee, { lng: -96.75, lat: 32.991 }]);
   });
 
   it('replaces a guess when the player taps the map', () => {

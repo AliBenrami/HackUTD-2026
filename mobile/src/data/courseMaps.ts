@@ -48,6 +48,10 @@ export function courseCenter(courseId: string): MapPoint | null {
   return stored.find((course) => course.id === courseId)?.center ?? null;
 }
 
+export function holePoints(hole: HoleDrawing, shots: MapPoint[] = []): MapPoint[] {
+  return [hole.tee, hole.greenCenter, ...hole.green, ...(hole.fairway ?? []), ...hole.bunkers.flat(), ...shots];
+}
+
 export function holeDrawing(courseId: string, holeNumber: number, teeName: string): HoleDrawing | null {
   const course = stored.find((item) => item.id === courseId);
   const hole = course?.holes.find((item) => item.number === holeNumber);
